@@ -2,6 +2,10 @@ import discord
 from discord.ext import commands
 import sqlite3
 import os
+from dotenv import load_dotenv
+
+# Loads environment variables (wndx2 machine only)
+load_dotenv()
 
 # Initialize the database connection
 conn = sqlite3.connect('currency.db')
@@ -33,4 +37,4 @@ async def on_ready():
         print(f'Error syncing commands: {e}')
 
 # Run the bot with your token
-bot.run('TOKEN')
+bot.run(os.getenv('TOKEN'))
