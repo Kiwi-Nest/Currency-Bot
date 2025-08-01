@@ -1,0 +1,4 @@
+.venv
+.env
+currency.db
+__pycache__/
