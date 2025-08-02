@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import sqlite3
 
+# Ping command adds the user to the database; it acts as a /start command
 class Ping(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
