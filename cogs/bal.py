@@ -18,8 +18,15 @@ class Bal(commands.Cog):
         result = self.cursor.fetchone()
         if result:
             balance = int(result[0])
+            embed = discord.Embed(
+                title="Balance",
+                description=f"{member.mention}\n Wallet: {balance}",
+                color=discord.Color.green()
+            )
+            embed.set_author(name=member.name, icon_url=member.display_avatar.url)
+            embed.set_footer(text=f"{ctx.author.name} | {discord.utils.utcnow().strftime('%H:%M:%S')} | balance")
+            await ctx.send(embed=embed)
             print(f'User {user_id} has a balance of {balance}')
-            await ctx.send(f"{member.name}'s, balance is ${balance}")
         else:
             print(f'User {user_id} not found in the database.')
             await ctx.send("User not found in the database.")

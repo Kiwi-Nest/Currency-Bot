@@ -34,13 +34,35 @@ class Daily(commands.Cog):
                 self.cursor.execute("UPDATE currencies SET balance = ?, tsd = ? WHERE discord_id = ?", (new_balance, now, user_id))
                 self.conn.commit()
                 print(f'User {user_id} has a balance of {new_balance}')
-                await ctx.send(f"{member.mention} claimed their daily, +${daily_mon}")
+                # Create and send the embed
+                embed = discord.Embed(
+                    title="Daily Claim",
+                    description=f"{member.mention}\n Balance: {new_balance}",
+                    color=discord.Color.green()
+                )
+                embed.set_author(name=member.name, icon_url=member.display_avatar.url)
+                embed.set_footer(text=f"{ctx.author.name} | {discord.utils.utcnow().strftime('%H:%M:%S')} | balance")
+
+                class DailyView(discord.ui.View):
+                    @discord.ui.button(label="Remind me", style=discord.ButtonStyle.primary)
+                    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+                        await interaction.response.send_message("You will be pinged when you can claim next", ephemeral=True)
+
+                view = DailyView()
+                await ctx.send(f"{member.mention} claimed their daily, +${daily_mon}", embed=embed, view=view)
             else:
                 time_left = cooldown - time_dif
                 hours = time_left // 3600
                 minutes = (time_left % 3600) // 60
                 seconds = time_left % 60
-                await ctx.send(f"You have already claimed this within the last 24 hours, please wait {hours}h {minutes}m {seconds}s")
+                embed = discord.Embed(
+                    title="Daily Claim",
+                    description=f"{hours}h, {minutes}m, {seconds}s",
+                    color=discord.Color.green()
+                )
+                embed.set_author(name=member.name, icon_url=member.display_avatar.url)
+                embed.set_footer(text=f"{ctx.author.name} | {discord.utils.utcnow().strftime('%H:%M:%S')} | daily claim")
+                await ctx.send(f"You have already claimed this within the last 24 hours, please wait {hours}h {minutes}m {seconds}s",embed=embed)
         else:
             print(f'User {user_id} not found in the database.')
             await ctx.send("User not found in the database.")
