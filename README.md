@@ -1,3 +1,1 @@
-# Kiwi-Nest-Currency
-Source code for the Kiwi Nest currency bot.
-
+This bot is a work-in-progress.

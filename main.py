@@ -4,7 +4,7 @@ import sqlite3
 import os
 from dotenv import load_dotenv
 
-# Loads environment variables (wndx2 machine only)
+# Loads environment variables
 load_dotenv()
 
 # Initialize the database connection
