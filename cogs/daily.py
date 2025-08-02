@@ -27,9 +27,9 @@ class Daily(commands.Cog):
             time_dif = now - last_claim
             if time_dif > cooldown:
                 if random.randint(1, 100) == 1:
-                    daily_mon = random.randint(101, 100000000000000000)
+                    daily_mon = random.randint(101, 10000)
                 else:
-                    daily_mon = random.randint(1, 100)
+                    daily_mon = random.randint(50, 100)
                 new_balance = balance + daily_mon
                 self.cursor.execute("UPDATE currencies SET balance = ?, tsd = ? WHERE discord_id = ?", (new_balance, now, user_id))
                 self.conn.commit()
