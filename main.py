@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS currencies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     discord_id TEXT NOT NULL,
     balance NUMBER NOT NULL,
-    tsw NUMBER NOT NULL,
-    tsd NUMBER NOT NULL
+    tsw NUMBER,
+    tsd NUMBER
 )
 ''')
 # Define the bot and its command prefix

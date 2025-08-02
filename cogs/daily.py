@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 import sqlite3
 import random
-import datetime
+import time
 
 cooldown = 86400
 
@@ -18,30 +18,33 @@ class Daily(commands.Cog):
         if member is None:
             member = ctx.author
         user_id = str(member.id)
-        self.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (user_id,))
+        self.cursor.execute("SELECT balance, tsd FROM currencies WHERE discord_id = ?", (user_id,))
         result = self.cursor.fetchone()
-        self.cursor.execute("SELECT tsd FROM currencies WHERE discord_id = ?", (user_id))
-        tsd = self.cursor.fetchone()
         if result:
             balance = int(result[0])
-            time = 
-            time_dif = time - tsd
+            last_claim = int(result[1]) if result[1] else 0
+            now = int(time.time())
+            time_dif = now - last_claim
             if time_dif > cooldown:
                 if random.randint(1, 100) == 1:
                     daily_mon = random.randint(101, 100000000000000000)
                 else:
                     daily_mon = random.randint(1, 100)
-                print(f'User {user_id} has a balance of {balance}')
-                await ctx.send(f"{member.name} claimed their daily, +${daily_mon}")
-                self.cu
+                new_balance = balance + daily_mon
+                self.cursor.execute("UPDATE currencies SET balance = ?, tsd = ? WHERE discord_id = ?", (new_balance, now, user_id))
+                self.conn.commit()
+                print(f'User {user_id} has a balance of {new_balance}')
+                await ctx.send(f"{member.mention} claimed their daily, +${daily_mon}")
             else:
-                time_left = int(time_dif - cooldown)
-                await ctx.send(f"You have already claimed this within the last 24 hours, please wait {time_left}")
-
+                time_left = cooldown - time_dif
+                hours = time_left // 3600
+                minutes = (time_left % 3600) // 60
+                seconds = time_left % 60
+                await ctx.send(f"You have already claimed this within the last 24 hours, please wait {hours}h {minutes}m {seconds}s")
         else:
             print(f'User {user_id} not found in the database.')
             await ctx.send("User not found in the database.")
-        print(f'Bal command executed by {user_id}.\n')
+        print(f'Daily command executed by {user_id}.\n')
 
 async def setup(bot):
     await bot.add_cog(Daily(bot))
