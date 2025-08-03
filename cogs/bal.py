@@ -21,21 +21,19 @@ class Bal(commands.Cog):
 
         self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (member.id,))
         result = self.bot.cursor.fetchone()
-        if result:
-            balance = int(result[0])
-            embed = discord.Embed(
-                title="Balance",
-                description=f"{member.mention}\n Wallet: {balance}",
-                color=discord.Color.green()
-            )
-            embed.set_author(name=member.name, icon_url=member.display_avatar.url)
-            embed.set_footer(text=f"{ctx.author.display_name} | Balance")
-            embed.timestamp = datetime.datetime.now()
-            await ctx.send(embed=embed)
-            print(f'User {member.display_name} has a balance of {balance}')
-        else:
-            print(f'User {member.display_name} not found in the database.')
-            await ctx.send("User not found in the database.")
+        balance = int(result[0]) if result else 0
+
+        embed = discord.Embed(
+            title="Balance",
+            description=f"{member.mention}\n Wallet: {balance}",
+            color=discord.Color.green()
+        )
+        embed.set_author(name=member.name, icon_url=member.display_avatar.url)
+        embed.set_footer(text=f"{ctx.author.display_name} | Balance")
+        embed.timestamp = datetime.datetime.now()
+        await ctx.send(embed=embed)
+        print(f'User {member.display_name} has a balance of {balance}')
+
         print(f'Bal command executed by {member.display_name}.\n')
 
 async def setup(bot):
