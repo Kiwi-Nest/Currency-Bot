@@ -1,6 +1,7 @@
 import datetime
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from CurrencyBot import CurrencyBot
@@ -12,6 +13,7 @@ class Bal(commands.Cog):
         self.bot = bot
 
     @commands.hybrid_command(name="bal", description="Displays a user's balance")
+    @app_commands.describe(member="User whose balance to show")
     async def bal(self, ctx: commands.Context, member: discord.Member = None):
         await ctx.defer()
         if member is None:
