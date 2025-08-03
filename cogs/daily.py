@@ -55,6 +55,8 @@ class DailyView(discord.ui.View):
         with open("uis.json", "r") as f:
             try:
                 owners = list[int](json.loads(f.read()))
+                if (self.owner in owners):
+                    return
             except json.decoder.JSONDecodeError:
                 owners = []
 
