@@ -1,5 +1,9 @@
 import datetime
+import json
 import random
+import os
+import asyncio
+from types import SimpleNamespace
 
 import discord
 from discord.ext import commands
@@ -9,15 +13,81 @@ from CurrencyBot import CurrencyBot
 cooldown = 86400
 
 class DailyView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, bot: CurrencyBot, ownerId: int):
         super().__init__(timeout=None)
+        self.channel: discord.abc.Messageable = None
+        self.owner = ownerId
+        self.bot = bot
+        asyncio.create_task(self.appendOwner())
 
     @discord.ui.button(label="Remind me", style=discord.ButtonStyle.primary, custom_id="REMIND")
     async def refresh(self, ctx: discord.Interaction, button: discord.ui.Button):
+        if(ctx.user.id != self.owner):
+            await ctx.response.send_message("You can't mess with this UI.", ephemeral=True)
+            return
+
         button.disabled = True
         self.stop()
+        asyncio.create_task(self.removeOwner())
+
+        self.channel = ctx.channel
+
+        # Faking message till I make it
+        fake_message = SimpleNamespace()
+        fake_message.id = ctx.message.id
+        fake_message.author = ctx.user
+        fake_message.guild = ctx.guild
+        fake_message.channel = ctx.channel
+
+        command = self.bot.get_command("daily")
+        # Evil undocumented API abuse
+        bucket = command._buckets.get_bucket(fake_message)
+        retry_after = bucket.get_retry_after()
+
+        asyncio.create_task(self.remind(int(retry_after)))
+
         await ctx.message.edit(view=self)
         await ctx.response.send_message("You will be pinged when you can claim next", ephemeral=True)
+
+    async def appendOwner(self):
+        if(not os.path.isfile("uis.json")):
+            open("uis.json", "w").write("[]")
+        with open("uis.json", "r") as f:
+            try:
+                owners = list[int](json.loads(f.read()))
+            except json.decoder.JSONDecodeError:
+                owners = []
+
+            owners.append(self.owner)
+            open("uis.json", "w").write(json.dumps(owners))
+
+    async def removeOwner(self):
+        if (not os.path.isfile("uis.json")):
+            return
+        with open("uis.json", "r") as f:
+            try:
+                owners = list[int](json.loads(f.read()))
+                owners.remove(self.owner)
+
+                open("uis.json", "w").write(json.dumps(owners))
+            except Exception:
+                return
+
+    async def remind(self, time: int):
+        await asyncio.sleep(time)
+        owner = await self.bot.fetch_user(self.owner)
+        await self.channel.send(f"{owner.mention}, it's time to claim your daily!")
+
+
+    @staticmethod
+    def getOwners():
+        if (not os.path.isfile("uis.json")):
+            return []
+        try:
+            with open("uis.json", "r") as f:
+                return list[int](json.loads(f.read()))
+        except Exception:
+            return []
 
 class Daily(commands.Cog):
     def __init__(self, bot: CurrencyBot):
@@ -54,7 +124,7 @@ class Daily(commands.Cog):
         embed.set_footer(text=f"{ctx.author.name} | Balance", icon_url=ctx.author.avatar.url)
         embed.timestamp = datetime.datetime.now()
 
-        view = DailyView()
+        view = DailyView(self.bot, ctx.author.id)
         await ctx.send(f"{ctx.author.mention} claimed their daily, +${daily_mon}", embed=embed, view=view)
 
         print(f'Daily command executed by {ctx.author.display_name}.\n')
@@ -84,6 +154,7 @@ class Daily(commands.Cog):
 
 async def setup(bot: CurrencyBot):
     # Persistent view
-    bot.add_view(DailyView())
+    for ownerId in DailyView.getOwners():
+        bot.add_view(DailyView(bot, ownerId))
 
     await bot.add_cog(Daily(bot))
