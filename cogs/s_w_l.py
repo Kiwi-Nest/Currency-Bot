@@ -1,4 +1,5 @@
 import random
+import string
 
 from discord import app_commands
 from discord.ext import commands
@@ -8,22 +9,24 @@ from CurrencyBot import CurrencyBot
 cooldown = 300
 
 class Sell(commands.Cog):
+    limbs = ["Left Arm", "Right Arm", "Left Hand", "Right Hand", "Head", "Torso"]
     def __init__(self, bot: CurrencyBot):
         self.bot = bot
 
     @commands.hybrid_command(name="sell", description="Sell one of wndx2's limbs")
     @commands.cooldown(1, cooldown, commands.BucketType.user)
     @app_commands.describe(limb="Limb to sell")
-    @app_commands.choices(limb=[
-        app_commands.Choice(name="Left Arm", value="left arm"),
-        app_commands.Choice(name="Right Arm", value="right arm"),
-        app_commands.Choice(name="Left Leg", value="left leg"),
-        app_commands.Choice(name="Right Leg", value="right leg"),
-        app_commands.Choice(name="Head", value="head"),
-        app_commands.Choice(name="Torso", value="torso"),
-    ])
-    async def sell(self, ctx: commands.Context, limb: str):
+    @app_commands.choices(limb=[app_commands.Choice(name=limb, value=limb.lower()) for limb in limbs])
+    async def sell(self, ctx: commands.Context, limb: str = None):
         await ctx.defer()
+
+        if(limb is None):
+            limb = random.choice(self.limbs)
+
+        if((limb := string.capwords(limb.replace("_", " "))) not in self.limbs):
+            await ctx.send("Invalid limb", ephemeral=True)
+            ctx.command.reset_cooldown(ctx)
+            return
 
         self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
         balance = self.bot.cursor.fetchone()
@@ -35,8 +38,8 @@ class Sell(commands.Cog):
         self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?", (ctx.author.id, balance, balance))
         self.bot.conn.commit()
 
-        print(f"User {ctx.author.display_name} has sold wndx2's {limb} for {random_num}.")
-        await ctx.send(f"{ctx.author.mention}, you sold wndx2's {limb} for ${random_num}.")
+        print(f"User {ctx.author.display_name} has sold wndx2's {limb.lower()} for {random_num}.")
+        await ctx.send(f"{ctx.author.mention}, you sold wndx2's {limb.lower()} for ${random_num}.")
 
         print(f'Sell command executed by {ctx.author.display_name}.\n')
 
