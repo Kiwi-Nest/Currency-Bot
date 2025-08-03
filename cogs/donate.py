@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from CurrencyBot import CurrencyBot
@@ -9,6 +10,8 @@ class Donate(commands.Cog):
         self.bot = bot
 
     @commands.hybrid_command(name="donate", description="Donate to the poor", aliases=["give"])
+    @app_commands.describe(member="User you want to donate to")
+    @app_commands.describe(amount="Amount to donate")
     async def donate(self, ctx: commands.Context, member: discord.Member, amount: int):
         await ctx.defer()
         sender_id = str(ctx.author.id)

@@ -1,8 +1,6 @@
-import discord
-from discord.ext import commands
-import sqlite3
 import random
-import time
+
+from discord.ext import commands
 
 cooldown = 300
 
