@@ -77,7 +77,7 @@ class DailyView(discord.ui.View):
                 return
 
     async def remind(self, time: int):
-        await asyncio.sleep(time)
+        await asyncio.sleep(time + 1)
         owner = await self.bot.fetch_user(self.owner)
         await self.channel.send(f"{owner.mention}, it's time to claim your daily!")
 
