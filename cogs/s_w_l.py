@@ -29,15 +29,15 @@ class Sell(commands.Cog):
             ctx.command.reset_cooldown(ctx)
             return
 
-        self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
-        balance = self.bot.cursor.fetchone()
+        await self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
+        balance = await self.bot.cursor.fetchone()
         balance = int(balance[0]) if balance else 0
 
         random_num = random.randint(1, 100)
         balance += random_num
 
-        self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?", (ctx.author.id, balance, balance))
-        self.bot.conn.commit()
+        await self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",(ctx.author.id, balance, balance))
+        await self.bot.conn.commit()
 
         print(f"User {ctx.author.display_name} has sold wndx2's {limb.lower()} for {random_num}.")
         await ctx.send(f"{ctx.author.mention}, you sold wndx2's {limb.lower()} for ${random_num}.")
@@ -59,15 +59,15 @@ class Sell(commands.Cog):
             ctx.command.reset_cooldown(ctx)
             return
 
-        self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
-        balance = self.bot.cursor.fetchone()
+        await self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
+        balance = await self.bot.cursor.fetchone()
         balance = int(balance[0]) if balance else 0
 
         random_num = random.randint(1, 100)
         balance += random_num
 
-        self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",(ctx.author.id, balance, balance))
-        self.bot.conn.commit()
+        await self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",(ctx.author.id, balance, balance))
+        await self.bot.conn.commit()
 
         print(f"User {ctx.author.display_name} has sold wndx2's {organ.lower()} for {random_num}.")
         await ctx.send(f"{ctx.author.mention}, you sold wndx2's {organ.lower()} for ${random_num}.")
