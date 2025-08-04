@@ -10,7 +10,8 @@ from discord.ext import commands
 
 from CurrencyBot import CurrencyBot
 
-cooldown = 86400
+#cooldown = 86400
+cooldown = 60  # For testing purposes, set to 60 seconds
 
 class DailyView(discord.ui.View):
     def __init__(self, bot: CurrencyBot, ownerId: int):
