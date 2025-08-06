@@ -1,9 +1,27 @@
 name: Ruff Check
 run-name: ${{ github.actor }} is running ruff.
-on: [push]
+on: [pull_request, push]
+permissions:
+  contents: write
+  id-token: write
 jobs:
-  Lint-Check:
+  quality:
+    name: Code Quality
     runs-on: ubuntu-latest
     steps:
-      - name: ruff-action
-        uses: astral-sh/ruff-action@v3.5.0
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Ruff lint
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: "latest"
+          args: "check --output-format=github"
+
+      - name: Run Ruff Format
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: "latest"
+          args: "format --check --respect-gitignore"
