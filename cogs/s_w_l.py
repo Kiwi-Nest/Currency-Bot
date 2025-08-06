@@ -122,5 +122,5 @@ class Sell(commands.Cog):
             )
 
 
-async def setup(bot) -> None:
+async def setup(bot: CurrencyBot) -> None:
     await bot.add_cog(Sell(bot))

@@ -36,30 +36,34 @@ class Donate(commands.Cog):
                 "SELECT balance FROM currencies WHERE discord_id = ?",
                 (receiver.id,),
             )
-            receiverBal = cursor.fetchone()
+            receiverBal = await cursor.fetchone()
             receiverBal = int(receiverBal[0]) if receiverBal else 0
 
-            if senderBal >= amount > 0:
-                receiverBal += amount
-                senderBal -= amount
+            if amount <= 0:
+                await ctx.send("Amount must be positive!")
+                return
+            if senderBal < amount:
+                await ctx.send(f"Insufficient funds! You have ${senderBal}")
+                return
 
-                await cursor.execute(
-                    "UPDATE currencies SET balance = ? WHERE discord_id = ?",
-                    (senderBal, ctx.author.id),
-                )
-                await cursor.execute(
-                    "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
-                    (receiver.id, receiverBal, receiverBal),
-                )
+            receiverBal += amount
+            senderBal -= amount
 
-                await ctx.send(
-                    f"{ctx.author.mention} donated ${amount} to {receiver.name}.",
-                )
-            else:
-                await ctx.send("Command error")
+            await cursor.execute(
+                "UPDATE currencies SET balance = ? WHERE discord_id = ?",
+                (senderBal, ctx.author.id),
+            )
+            await cursor.execute(
+                "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
+                (receiver.id, receiverBal, receiverBal),
+            )
+
+            await ctx.send(
+                f"{ctx.author.mention} donated ${amount} to {receiver.name}.",
+            )
 
             print(f"Donate command executed by {ctx.author.display_name}.\n")
 
 
-async def setup(bot) -> None:
+async def setup(bot: CurrencyBot) -> None:
     await bot.add_cog(Donate(bot))
