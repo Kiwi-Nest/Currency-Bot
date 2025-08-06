@@ -61,5 +61,5 @@ class Donate(commands.Cog):
             print(f"Donate command executed by {ctx.author.display_name}.\n")
 
 
-async def setup(bot) -> None:
+async def setup(bot: CurrencyBot) -> None:
     await bot.add_cog(Donate(bot))

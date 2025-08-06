@@ -43,5 +43,5 @@ class Bal(commands.Cog):
         print(f"Bal command executed by {member.display_name}.\n")
 
 
-async def setup(bot) -> None:
+async def setup(bot: CurrencyBot) -> None:
     await bot.add_cog(Bal(bot))
