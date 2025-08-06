@@ -1,0 +1,9 @@
+name: Ruff Check
+run-name: ${{ github.actor }} is running ruff.
+on: [push]
+jobs:
+  Lint-Check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ruff-action
+        uses: astral-sh/ruff-action@v3.5.0
