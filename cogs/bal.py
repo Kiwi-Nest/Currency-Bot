@@ -20,11 +20,13 @@ class Bal(commands.Cog):
         if member is None:
             member = ctx.author
 
-        await self.bot.cursor.execute(
-            "SELECT balance FROM currencies WHERE discord_id = ?",
-            (member.id,),
-        )
-        result = await self.bot.cursor.fetchone()
+        async with self.bot.get_cursor() as cursor:
+            await cursor.execute(
+                "SELECT balance FROM currencies WHERE discord_id = ?",
+                (member.id,),
+            )
+            result = await cursor.fetchone()
+
         balance = int(result[0]) if result else 0
 
         embed = discord.Embed(

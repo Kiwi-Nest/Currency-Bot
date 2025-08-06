@@ -42,21 +42,22 @@ class Sell(commands.Cog):
             ctx.command.reset_cooldown(ctx)
             return
 
-        await self.bot.cursor.execute(
-            "SELECT balance FROM currencies WHERE discord_id = ?",
-            (ctx.author.id,),
-        )
-        balance = await self.bot.cursor.fetchone()
-        balance = int(balance[0]) if balance else 0
+        async with self.bot.get_cursor() as cursor:
+            await cursor.execute(
+                "SELECT balance FROM currencies WHERE discord_id = ?",
+                (ctx.author.id,),
+            )
 
-        random_num = random.randint(1, 100)
-        balance += random_num
+            balance = await cursor.fetchone()
+            balance = int(balance[0]) if balance else 0
 
-        await self.bot.cursor.execute(
-            "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
-            (ctx.author.id, balance, balance),
-        )
-        await self.bot.conn.commit()
+            random_num = random.randint(1, 100)
+            balance += random_num
+
+            await cursor.execute(
+                "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
+                (ctx.author.id, balance, balance),
+            )
 
         print(
             f"User {ctx.author.display_name} has sold wndx2's {limb.lower()} for {random_num}.",
@@ -84,21 +85,21 @@ class Sell(commands.Cog):
             ctx.command.reset_cooldown(ctx)
             return
 
-        await self.bot.cursor.execute(
-            "SELECT balance FROM currencies WHERE discord_id = ?",
-            (ctx.author.id,),
-        )
-        balance = await self.bot.cursor.fetchone()
-        balance = int(balance[0]) if balance else 0
+        async with self.bot.get_cursor() as cursor:
+            await cursor.execute(
+                "SELECT balance FROM currencies WHERE discord_id = ?",
+                (ctx.author.id,),
+            )
+            balance = await cursor.fetchone()
+            balance = int(balance[0]) if balance else 0
 
-        random_num = random.randint(1, 100)
-        balance += random_num
+            random_num = random.randint(1, 100)
+            balance += random_num
 
-        await self.bot.cursor.execute(
-            "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
-            (ctx.author.id, balance, balance),
-        )
-        await self.bot.conn.commit()
+            await cursor.execute(
+                "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
+                (ctx.author.id, balance, balance),
+            )
 
         print(
             f"User {ctx.author.display_name} has sold wndx2's {organ.lower()} for {random_num}.",

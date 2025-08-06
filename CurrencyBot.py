@@ -1,4 +1,7 @@
 import pathlib
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from typing import ClassVar
 
 import aiosqlite
 import discord
@@ -6,9 +9,8 @@ from discord.ext import commands
 
 
 class CurrencyBot(commands.Bot):
-    loadedExtensions: list[str] = []
-    conn: aiosqlite.Connection
-    cursor: aiosqlite.Cursor
+    loadedExtensions: ClassVar[list[str]] = []
+    DATABASE = "currency.db"
 
     def __init__(self) -> None:
         # Define the bot and its command prefix
@@ -16,9 +18,14 @@ class CurrencyBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents, help_command=None)
 
+    @asynccontextmanager
+    async def get_cursor(self) -> AsyncGenerator[aiosqlite.Cursor]:
+        async with aiosqlite.connect(self.DATABASE) as conn, conn.cursor() as cursor:
+            yield cursor
+
     async def _postInit(self) -> None:
         # Initialize the database connection
-        async with aiosqlite.connect("currency.db") as conn:
+        async with aiosqlite.connect(self.DATABASE) as conn:
             await conn.execute(
                 """
             CREATE TABLE IF NOT EXISTS currencies
