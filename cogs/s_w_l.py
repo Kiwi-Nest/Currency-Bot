@@ -71,9 +71,7 @@ class Sell(commands.Cog):
     @commands.cooldown(1, cooldown, commands.BucketType.user)
     @app_commands.describe(organ="Organ to harvest")
     @app_commands.choices(
-        organ=[
-            app_commands.Choice(name=organ, value=organ.lower()) for organ in organs
-        ],
+        organ=[app_commands.Choice(name=organ, value=organ.lower()) for organ in organs],
     )
     async def harvest(self, ctx: commands.Context, organ: str | None = None) -> None:
         await ctx.defer()

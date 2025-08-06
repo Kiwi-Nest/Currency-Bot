@@ -1,4 +1,4 @@
-import os
+import pathlib
 
 import aiosqlite
 import discord
@@ -18,28 +18,26 @@ class CurrencyBot(commands.Bot):
 
     async def _postInit(self) -> None:
         # Initialize the database connection
-        self.conn = aiosqlite.connect("currency.db")
-        self.cursor = await self.conn.cursor()
-        # Create a table for currencies if it doesn't exist
-        await self.cursor.execute(
-            """
-                            CREATE TABLE IF NOT EXISTS currencies
-                            (
-                                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                                discord_id TEXT UNIQUE NOT NULL,
-                                balance    NUMBER      NOT NULL
-                            )
-                            """,
-        )
+        async with aiosqlite.connect("currency.db") as conn:
+            await conn.execute(
+                """
+            CREATE TABLE IF NOT EXISTS currencies
+            (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                discord_id TEXT UNIQUE NOT NULL,
+                balance    NUMBER      NOT NULL
+            )
+            """,
+            )
 
     # Event to notify when the bot has connected
     async def on_ready(self) -> None:
         await self._postInit()
         print(f"Logged in as {self.user}")
         try:
-            for filename in os.listdir("./cogs"):
-                if filename.endswith(".py"):
-                    await self.load_extension(f"cogs.{filename[:-3]}")
+            for file in pathlib.Path("./cogs").glob("*.py"):
+                if file.is_file():
+                    await self.load_extension(f"cogs.{file.stem}")
             synced = await self.tree.sync()  # Sync slash commands with Discord
             print(f"Synced {len(synced)} command(s)")
         except Exception as e:

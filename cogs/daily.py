@@ -123,11 +123,7 @@ class Daily(commands.Cog):
         result = await self.bot.cursor.fetchone()
         balance = int(result[0]) if result else 0
 
-        daily_mon = (
-            random.randint(101, 10000)
-            if random.randint(1, 100) == 1
-            else random.randint(50, 100)
-        )
+        daily_mon = random.randint(101, 10000) if random.randint(1, 100) == 1 else random.randint(50, 100)
 
         new_balance = balance + daily_mon
 
