@@ -101,8 +101,8 @@ class Daily(commands.Cog):
     async def daily(self, ctx: commands.Context):
         await ctx.defer()
 
-        self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
-        result = self.bot.cursor.fetchone()
+        await self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
+        result = await self.bot.cursor.fetchone()
         balance = int(result[0]) if result else 0
 
         if random.randint(1, 100) == 1:
@@ -112,8 +112,8 @@ class Daily(commands.Cog):
 
         new_balance = balance + daily_mon
 
-        self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?", (ctx.author.id, new_balance, new_balance))
-        self.bot.conn.commit()
+        await self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",(ctx.author.id, new_balance, new_balance))
+        await self.bot.conn.commit()
         print(f'User {ctx.author.display_name} has a balance of {new_balance}')
 
         # Create and send the embed

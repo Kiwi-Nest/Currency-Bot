@@ -15,11 +15,11 @@ class Donate(commands.Cog):
     async def donate(self, ctx: commands.Context, receiver: discord.Member, amount: int):
         await ctx.defer()
 
-        self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
-        senderBal = self.bot.cursor.fetchone()
+        await self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
+        senderBal = await self.bot.cursor.fetchone()
         senderBal = int(senderBal[0]) if senderBal else 0
 
-        self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (receiver.id,))
+        await self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (receiver.id,))
         receiverBal = self.bot.cursor.fetchone()
         receiverBal = int(receiverBal[0]) if receiverBal else 0
 
@@ -27,9 +27,9 @@ class Donate(commands.Cog):
             receiverBal += amount
             senderBal -= amount
 
-            self.bot.cursor.execute("UPDATE currencies SET balance = ? WHERE discord_id = ?", (senderBal, ctx.author.id))
-            self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?", (receiver.id, receiverBal, receiverBal))
-            self.bot.conn.commit()
+            await self.bot.cursor.execute("UPDATE currencies SET balance = ? WHERE discord_id = ?",(senderBal, ctx.author.id))
+            await self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",(receiver.id, receiverBal, receiverBal))
+            await self.bot.conn.commit()
 
             await ctx.send(f"{ctx.author.mention} donated ${amount} to {receiver.name}.")
         else:

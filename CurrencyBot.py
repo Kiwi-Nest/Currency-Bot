@@ -1,33 +1,36 @@
+import asyncio
 import os
-import sqlite3
 
+import aiosqlite
 import discord
 from discord.ext import commands
 
 
 class CurrencyBot(commands.Bot):
     loadedExtensions: list[str] = []
-    conn: sqlite3.Connection
-    cursor: sqlite3.Cursor
+    conn: aiosqlite.Connection
+    cursor: aiosqlite.Cursor
 
     def __init__(self):
-        # Initialize the database connection
-        self.conn = sqlite3.connect('currency.db')
-        self.cursor = self.conn.cursor()
-        # Create a table for currencies if it doesn't exist
-        self.cursor.execute('''
-                       CREATE TABLE IF NOT EXISTS currencies
-                       (
-                           id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                           discord_id TEXT   UNIQUE NOT NULL,
-                           balance    NUMBER NOT NULL
-                       )
-                       ''')
-
         # Define the bot and its command prefix
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents, help_command=None)
+        asyncio.create_task(self._postInit())
+
+    async def _postInit(self):
+        # Initialize the database connection
+        self.conn = aiosqlite.connect('currency.db')
+        self.cursor = await self.conn.cursor()
+        # Create a table for currencies if it doesn't exist
+        await self.cursor.execute('''
+                            CREATE TABLE IF NOT EXISTS currencies
+                            (
+                                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                                discord_id TEXT UNIQUE NOT NULL,
+                                balance    NUMBER      NOT NULL
+                            )
+                            ''')
 
     # Event to notify when the bot has connected
     async def on_ready(self):
