@@ -1,4 +1,3 @@
-import asyncio
 import os
 
 import aiosqlite
@@ -16,7 +15,6 @@ class CurrencyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents, help_command=None)
-        asyncio.create_task(self._postInit())
 
     async def _postInit(self) -> None:
         # Initialize the database connection
@@ -36,6 +34,7 @@ class CurrencyBot(commands.Bot):
 
     # Event to notify when the bot has connected
     async def on_ready(self) -> None:
+        await self._postInit()
         print(f"Logged in as {self.user}")
         try:
             for filename in os.listdir("./cogs"):

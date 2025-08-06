@@ -1,0 +1,3 @@
+- Pycharm is recommended.
+- Use squash to merge pull requests.
+- Use ruff for linting and black for formatting.
