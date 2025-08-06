@@ -9,4 +9,4 @@ load_dotenv()
 
 # Run the bot with your token
 bot: CurrencyBot = CurrencyBot()
-bot.run(os.getenv('TOKEN'))
+bot.run(os.getenv("TOKEN"))

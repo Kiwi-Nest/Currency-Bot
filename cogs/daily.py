@@ -1,8 +1,8 @@
+import asyncio
 import datetime
 import json
-import random
 import os
-import asyncio
+import random
 from types import SimpleNamespace
 
 import discord
@@ -10,21 +10,33 @@ from discord.ext import commands
 
 from CurrencyBot import CurrencyBot
 
-#cooldown = 86400
+# cooldown = 86400
 cooldown = 60  # For testing purposes, set to 60 seconds
 
+
 class DailyView(discord.ui.View):
-    def __init__(self, bot: CurrencyBot, ownerId: int):
+    def __init__(self, bot: CurrencyBot, ownerId: int) -> None:
         super().__init__(timeout=None)
         self.channel: discord.abc.Messageable = None
         self.owner = ownerId
         self.bot = bot
         asyncio.create_task(self.appendOwner())
 
-    @discord.ui.button(label="Remind me", style=discord.ButtonStyle.primary, custom_id="REMIND")
-    async def refresh(self, ctx: discord.Interaction, button: discord.ui.Button):
-        if(ctx.user.id != self.owner):
-            await ctx.response.send_message("You can't mess with this UI.", ephemeral=True)
+    @discord.ui.button(
+        label="Remind me",
+        style=discord.ButtonStyle.primary,
+        custom_id="REMIND",
+    )
+    async def refresh(
+        self,
+        ctx: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        if ctx.user.id != self.owner:
+            await ctx.response.send_message(
+                "You can't mess with this UI.",
+                ephemeral=True,
+            )
             return
 
         button.disabled = True
@@ -48,15 +60,18 @@ class DailyView(discord.ui.View):
         asyncio.create_task(self.remind(int(retry_after)))
 
         await ctx.message.edit(view=self)
-        await ctx.response.send_message("You will be pinged when you can claim next", ephemeral=True)
+        await ctx.response.send_message(
+            "You will be pinged when you can claim next",
+            ephemeral=True,
+        )
 
-    async def appendOwner(self):
-        if(not os.path.isfile("uis.json")):
+    async def appendOwner(self) -> None:
+        if not os.path.isfile("uis.json"):
             open("uis.json", "w").write("[]")
-        with open("uis.json", "r") as f:
+        with open("uis.json") as f:
             try:
                 owners = list[int](json.loads(f.read()))
-                if (self.owner in owners):
+                if self.owner in owners:
                     return
             except json.decoder.JSONDecodeError:
                 owners = []
@@ -64,10 +79,10 @@ class DailyView(discord.ui.View):
             owners.append(self.owner)
             open("uis.json", "w").write(json.dumps(owners))
 
-    async def removeOwner(self):
-        if (not os.path.isfile("uis.json")):
+    async def removeOwner(self) -> None:
+        if not os.path.isfile("uis.json"):
             return
-        with open("uis.json", "r") as f:
+        with open("uis.json") as f:
             try:
                 owners = list[int](json.loads(f.read()))
                 owners.remove(self.owner)
@@ -76,65 +91,79 @@ class DailyView(discord.ui.View):
             except Exception:
                 return
 
-    async def remind(self, time: int):
+    async def remind(self, time: int) -> None:
         await asyncio.sleep(time + 1)
         owner = await self.bot.fetch_user(self.owner)
         await self.channel.send(f"{owner.mention}, it's time to claim your daily!")
 
-
     @staticmethod
     def getOwners():
-        if (not os.path.isfile("uis.json")):
+        if not os.path.isfile("uis.json"):
             return []
         try:
-            with open("uis.json", "r") as f:
+            with open("uis.json") as f:
                 return list[int](json.loads(f.read()))
         except Exception:
             return []
 
+
 class Daily(commands.Cog):
-    def __init__(self, bot: CurrencyBot):
+    def __init__(self, bot: CurrencyBot) -> None:
         self.bot = bot
 
     @commands.hybrid_command(name="daily", description="Claim your daily monies")
     @commands.cooldown(1, cooldown, commands.BucketType.user)
-    async def daily(self, ctx: commands.Context):
+    async def daily(self, ctx: commands.Context) -> None:
         await ctx.defer()
 
-        await self.bot.cursor.execute("SELECT balance FROM currencies WHERE discord_id = ?", (ctx.author.id,))
+        await self.bot.cursor.execute(
+            "SELECT balance FROM currencies WHERE discord_id = ?",
+            (ctx.author.id,),
+        )
         result = await self.bot.cursor.fetchone()
         balance = int(result[0]) if result else 0
 
-        if random.randint(1, 100) == 1:
-            daily_mon = random.randint(101, 10000)
-        else:
-            daily_mon = random.randint(50, 100)
+        daily_mon = (
+            random.randint(101, 10000)
+            if random.randint(1, 100) == 1
+            else random.randint(50, 100)
+        )
 
         new_balance = balance + daily_mon
 
-        await self.bot.cursor.execute("INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",(ctx.author.id, new_balance, new_balance))
+        await self.bot.cursor.execute(
+            "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
+            (ctx.author.id, new_balance, new_balance),
+        )
         await self.bot.conn.commit()
-        print(f'User {ctx.author.display_name} has a balance of {new_balance}')
+        print(f"User {ctx.author.display_name} has a balance of {new_balance}")
 
         # Create and send the embed
         embed = discord.Embed(
             title="Daily Claim",
             description=f"{ctx.author.mention}\n Balance: {new_balance}",
-            color=discord.Color.green()
+            color=discord.Color.green(),
         )
 
         embed.set_author(name=ctx.author.name, icon_url=ctx.author.display_avatar.url)
-        embed.set_footer(text=f"{ctx.author.name} | Balance", icon_url=ctx.author.avatar.url)
+        embed.set_footer(
+            text=f"{ctx.author.name} | Balance",
+            icon_url=ctx.author.avatar.url,
+        )
         embed.timestamp = datetime.datetime.now()
 
         view = DailyView(self.bot, ctx.author.id)
-        await ctx.send(f"{ctx.author.mention} claimed their daily, +${daily_mon}", embed=embed, view=view)
+        await ctx.send(
+            f"{ctx.author.mention} claimed their daily, +${daily_mon}",
+            embed=embed,
+            view=view,
+        )
 
-        print(f'Daily command executed by {ctx.author.display_name}.\n')
+        print(f"Daily command executed by {ctx.author.display_name}.\n")
 
     @daily.error
-    async def daily_error(self, ctx: commands.Context, error):
-        if(isinstance(error, commands.CommandOnCooldown)):
+    async def daily_error(self, ctx: commands.Context, error) -> None:
+        if isinstance(error, commands.CommandOnCooldown):
             time_left = error.retry_after
 
             hours = int(time_left // 3600)
@@ -144,18 +173,27 @@ class Daily(commands.Cog):
             embed = discord.Embed(
                 title="Daily Claim",
                 description=f"Claim next in {hours}h, {minutes}m, {seconds}s",
-                color=discord.Color.red()
+                color=discord.Color.red(),
             )
 
-            embed.set_author(name=ctx.author.name, icon_url=ctx.author.display_avatar.url)
-            embed.set_footer(text=f"{ctx.author.display_name} | Daily Claim", icon_url=ctx.author.display_avatar.url)
+            embed.set_author(
+                name=ctx.author.name,
+                icon_url=ctx.author.display_avatar.url,
+            )
+            embed.set_footer(
+                text=f"{ctx.author.display_name} | Daily Claim",
+                icon_url=ctx.author.display_avatar.url,
+            )
             embed.timestamp = datetime.datetime.now()
-            await ctx.send(f"You have already claimed this within the last 24 hours, please wait {hours}h {minutes}m {seconds}s", embed=embed)
+            await ctx.send(
+                f"You have already claimed this within the last 24 hours, please wait {hours}h {minutes}m {seconds}s",
+                embed=embed,
+            )
 
-        print(f'Daily command executed by {ctx.author.display_name}.\n')
+        print(f"Daily command executed by {ctx.author.display_name}.\n")
 
 
-async def setup(bot: CurrencyBot):
+async def setup(bot: CurrencyBot) -> None:
     # Persistent view
     for ownerId in DailyView.getOwners():
         bot.add_view(DailyView(bot, ownerId))
