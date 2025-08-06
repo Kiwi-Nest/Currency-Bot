@@ -5,6 +5,32 @@ description = "Currency bot for KiwiNest"
 readme = "README.md"
 requires-python = ">=3.13"
 
+[tool.ruff]
+line-length = 130
+
 [tool.ruff.lint]
+# Require explicit selection of preview rules.
+explicit-preview-rules = true
 select = ["ALL"]
 extend-select = ["ALL"]
+extend-safe-fixes = ["ALL"]
+extend-ignore = [
+  "T201",     # Ignore print
+  "ASYNC230",
+  "DTZ005",
+  "N802",
+  "N803",
+  "N815",
+  "N816",     # allow camelcase
+  "N806",     # allow dunder
+  "PD002",    # allow pandas inplace
+  "S311",     # allow non-crypto random
+  "INP001",   # implicit namespace
+  "D100",     # Missing Docstring
+  "D101",     # Missing Docstring
+  "D102",     # Missing Docstring
+  "D103",     # Missing Docstring
+  "D107",     # Missing Docstring
+  "FBT002",   # boolean-default-value-positional-argument
+]
+preview = true
