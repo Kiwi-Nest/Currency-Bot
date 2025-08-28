@@ -86,4 +86,4 @@ class CurrencyBot(commands.Bot):
                     (bumper.id, reward, reward),
                 )
 
-            await message.reply(f"{bumper.mention}\r\nAs a reward for bumping, you received {reward} coins!")
+            await message.reply(f"{bumper.mention}\r\nAs a reward for bumping, you received ${reward}!")
