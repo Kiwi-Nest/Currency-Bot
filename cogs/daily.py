@@ -1,10 +1,11 @@
 import asyncio
 import datetime
 import json
-import os
+import pathlib
 import random
 from types import SimpleNamespace
 
+import aiofiles
 import discord
 from discord.ext import commands
 
@@ -20,7 +21,8 @@ class DailyView(discord.ui.View):
         self.channel: discord.abc.Messageable = None
         self.owner = ownerId
         self.bot = bot
-        asyncio.create_task(self.appendOwner())
+        # There's no other way to achieve persistent view
+        asyncio.create_task(self.appendOwner())  # noqa: RUF006
 
     @discord.ui.button(
         label="Remind me",
@@ -41,7 +43,7 @@ class DailyView(discord.ui.View):
 
         button.disabled = True
         self.stop()
-        asyncio.create_task(self.removeOwner())
+        await self.removeOwner()
 
         self.channel = ctx.channel
 
@@ -54,10 +56,11 @@ class DailyView(discord.ui.View):
 
         command = self.bot.get_command("daily")
         # Evil undocumented API abuse
-        bucket = command._buckets.get_bucket(fake_message)
+        bucket = command._buckets.get_bucket(fake_message)  # noqa: SLF001
         retry_after = bucket.get_retry_after()
 
-        asyncio.create_task(self.remind(int(retry_after)))
+        # Like running a new thread, we don't care about if it fails
+        asyncio.create_task(self.remind(int(retry_after)))  # noqa: RUF006
 
         await ctx.message.edit(view=self)
         await ctx.response.send_message(
@@ -65,46 +68,46 @@ class DailyView(discord.ui.View):
             ephemeral=True,
         )
 
-    async def appendOwner(self) -> None:
-        if not os.path.isfile("uis.json"):
-            open("uis.json", "w").write("[]")
-        with open("uis.json") as f:
-            try:
-                owners = list[int](json.loads(f.read()))
-                if self.owner in owners:
-                    return
-            except json.decoder.JSONDecodeError:
-                owners = []
-
-            owners.append(self.owner)
-            open("uis.json", "w").write(json.dumps(owners))
-
-    async def removeOwner(self) -> None:
-        if not os.path.isfile("uis.json"):
-            return
-        with open("uis.json") as f:
-            try:
-                owners = list[int](json.loads(f.read()))
-                owners.remove(self.owner)
-
-                open("uis.json", "w").write(json.dumps(owners))
-            except Exception:
-                return
-
     async def remind(self, time: int) -> None:
         await asyncio.sleep(time + 1)
         owner = await self.bot.fetch_user(self.owner)
         await self.channel.send(f"{owner.mention}, it's time to claim your daily!")
 
+    async def appendOwner(self) -> None:
+        async with aiofiles.open("uis.json", "w+") as f:
+            if not (content := (await f.read()).strip()):
+                await f.write("[]")
+                owners = set()
+            else:
+                try:
+                    owners = set[int](json.loads(content))
+                    if self.owner in owners:
+                        return
+
+                except json.decoder.JSONDecodeError:
+                    owners = set()
+
+            owners.add(self.owner)
+            await f.write(json.dumps(owners))
+
+    async def removeOwner(self) -> None:
+        if not pathlib.Path("uis.json").is_file():
+            return
+        async with aiofiles.open("uis.json", "w+") as f:
+            owners = set[int](json.loads(await f.read()))
+            owners.remove(self.owner)
+
+            await f.write(json.dumps(owners))
+
     @staticmethod
-    def getOwners():
-        if not os.path.isfile("uis.json"):
-            return []
+    async def getOwners() -> set[int]:
+        if not pathlib.Path("uis.json").is_file():
+            return set()
         try:
-            with open("uis.json") as f:
-                return list[int](json.loads(f.read()))
-        except Exception:
-            return []
+            async with aiofiles.open("uis.json") as f:
+                return set[int](json.loads(await f.read()))
+        except json.JSONDecodeError:
+            return set()
 
 
 class Daily(commands.Cog):
@@ -158,7 +161,7 @@ class Daily(commands.Cog):
         print(f"Daily command executed by {ctx.author.display_name}.\n")
 
     @daily.error
-    async def daily_error(self, ctx: commands.Context, error) -> None:
+    async def daily_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
         if isinstance(error, commands.CommandOnCooldown):
             time_left = error.retry_after
 

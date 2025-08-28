@@ -1,5 +1,6 @@
 import random
 import string
+from typing import ClassVar
 
 from discord import app_commands
 from discord.ext import commands
@@ -10,8 +11,8 @@ cooldown = 300
 
 
 class Sell(commands.Cog):
-    limbs = ["Left Arm", "Right Arm", "Left Hand", "Right Hand", "Head", "Torso"]
-    organs = [
+    LIMBS: ClassVar[list[str]] = ["Left Arm", "Right Arm", "Left Hand", "Right Hand", "Head", "Torso"]
+    ORGANS: ClassVar[list[str]] = [
         "Brain",
         "Heart",
         "Left Kidney",
@@ -29,15 +30,15 @@ class Sell(commands.Cog):
     @commands.cooldown(1, cooldown, commands.BucketType.user)
     @app_commands.describe(limb="Limb to sell")
     @app_commands.choices(
-        limb=[app_commands.Choice(name=limb, value=limb.lower()) for limb in limbs],
+        limb=[app_commands.Choice(name=limb, value=limb.lower()) for limb in LIMBS],
     )
     async def sell(self, ctx: commands.Context, limb: str | None = None) -> None:
         await ctx.defer()
 
         if limb is None:
-            limb = random.choice(self.limbs)
+            limb = random.choice(self.LIMBS)
 
-        if (limb := string.capwords(limb.replace("_", " "))) not in self.limbs:
+        if (limb := string.capwords(limb.replace("_", " "))) not in self.LIMBS:
             await ctx.send("Invalid limb", ephemeral=True)
             ctx.command.reset_cooldown(ctx)
             return
@@ -72,15 +73,15 @@ class Sell(commands.Cog):
     @commands.cooldown(1, cooldown, commands.BucketType.user)
     @app_commands.describe(organ="Organ to harvest")
     @app_commands.choices(
-        organ=[app_commands.Choice(name=organ, value=organ.lower()) for organ in organs],
+        organ=[app_commands.Choice(name=organ, value=organ.lower()) for organ in ORGANS],
     )
     async def harvest(self, ctx: commands.Context, organ: str | None = None) -> None:
         await ctx.defer()
 
         if organ is None:
-            organ = random.choice(self.organs)
+            organ = random.choice(self.ORGANS)
 
-        if (organ := string.capwords(organ.replace("_", " "))) not in self.organs:
+        if (organ := string.capwords(organ.replace("_", " "))) not in self.ORGANS:
             await ctx.send("Invalid organ", ephemeral=True)
             ctx.command.reset_cooldown(ctx)
             return
@@ -112,7 +113,7 @@ class Sell(commands.Cog):
 
     @sell.error
     @harvest.error
-    async def sell_error(self, ctx: commands.Context, error) -> None:
+    async def sell_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
         if isinstance(error, commands.CommandOnCooldown):
             time_left = error.retry_after
             minutes = int(time_left // 60)

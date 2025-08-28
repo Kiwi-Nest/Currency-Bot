@@ -7,7 +7,10 @@ from typing import ClassVar
 
 import aiosqlite
 import discord
+from discord import Forbidden, HTTPException, Message, MissingApplicationID
+from discord.app_commands import CommandSyncFailure, TranslationError
 from discord.ext import commands
+from discord.ext.commands import ExtensionAlreadyLoaded, ExtensionFailed, ExtensionNotFound, NoEntryPointError
 
 
 class CurrencyBot(commands.Bot):
@@ -49,7 +52,17 @@ class CurrencyBot(commands.Bot):
                     await self.load_extension(f"cogs.{file.stem}")
             synced = await self.tree.sync()  # Sync slash commands with Discord
             print(f"Synced {len(synced)} command(s)")
-        except Exception as e:
+        except (
+            HTTPException,
+            CommandSyncFailure,
+            Forbidden,
+            MissingApplicationID,
+            TranslationError,
+            ExtensionNotFound,
+            ExtensionAlreadyLoaded,
+            NoEntryPointError,
+            ExtensionFailed,
+        ) as e:
             print(f"Error syncing commands: {e}")
 
     # Check if Fibo thanked for bumping
