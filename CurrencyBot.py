@@ -1,11 +1,16 @@
 import pathlib
+import random
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import ClassVar
 
 import aiosqlite
 import discord
+from discord import Forbidden, HTTPException, Message, MissingApplicationID
+from discord.app_commands import CommandSyncFailure, TranslationError
 from discord.ext import commands
+from discord.ext.commands import ExtensionAlreadyLoaded, ExtensionFailed, ExtensionNotFound, NoEntryPointError
 
 
 class CurrencyBot(commands.Bot):
@@ -47,5 +52,38 @@ class CurrencyBot(commands.Bot):
                     await self.load_extension(f"cogs.{file.stem}")
             synced = await self.tree.sync()  # Sync slash commands with Discord
             print(f"Synced {len(synced)} command(s)")
-        except Exception as e:
+        except (
+            HTTPException,
+            CommandSyncFailure,
+            Forbidden,
+            MissingApplicationID,
+            TranslationError,
+            ExtensionNotFound,
+            ExtensionAlreadyLoaded,
+            NoEntryPointError,
+            ExtensionFailed,
+        ) as e:
             print(f"Error syncing commands: {e}")
+
+    # Check if Fibo thanked for bumping
+    async def on_message(self, message: Message, /) -> None:
+        bump_channel_id = 1328629578683383879
+        fibo_bot_id = 735147814878969968
+        bumped_regex = re.compile("Thx for bumping our Server! We will remind you in 2 hours!\r\n<@(\\d{18})>")
+
+        if (
+            message.channel.id == bump_channel_id
+            and message.author.id == fibo_bot_id
+            and (match := bumped_regex.match(message.content.strip()))
+        ):
+            bumper = await self.fetch_user(int(match.group(1)))
+            reward = random.randint(50, 100)  # TODO(m3z0id): Change actual amount
+
+            async with self.get_cursor() as cursor:
+                await cursor.execute(
+                    "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) \
+                    ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
+                    (bumper.id, reward, reward),
+                )
+
+            await message.reply(f"{bumper.mention}\r\nAs a reward for bumping, you received ${reward}!")
