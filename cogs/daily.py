@@ -88,7 +88,7 @@ class DailyView(discord.ui.View):
                     owners = set()
 
             owners.add(self.owner)
-            await f.write(json.dumps(owners))
+            await f.write(json.dumps(list(owners)))
 
     async def removeOwner(self) -> None:
         if not pathlib.Path("uis.json").is_file():
@@ -97,7 +97,7 @@ class DailyView(discord.ui.View):
             owners = set[int](json.loads(await f.read()))
             owners.remove(self.owner)
 
-            await f.write(json.dumps(owners))
+            await f.write(json.dumps(list(owners)))
 
     @staticmethod
     async def getOwners() -> set[int]:
@@ -194,7 +194,7 @@ class Daily(commands.Cog):
 
 async def setup(bot: CurrencyBot) -> None:
     # Persistent view
-    for ownerId in DailyView.getOwners():
+    for ownerId in await DailyView.getOwners():
         bot.add_view(DailyView(bot, ownerId))
 
     await bot.add_cog(Daily(bot))
