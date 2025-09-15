@@ -1,8 +1,9 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.ext.commands import Range
 
-from CurrencyBot import CurrencyBot
+from modules.CurrencyBot import CurrencyBot
 
 
 class Donate(commands.Cog):
@@ -20,49 +21,22 @@ class Donate(commands.Cog):
         self,
         ctx: commands.Context,
         receiver: discord.Member,
-        amount: int,
+        amount: Range[int, 1],
     ) -> None:
         await ctx.defer()
 
-        async with self.bot.get_cursor() as cursor:
-            await cursor.execute(
-                "SELECT balance FROM currencies WHERE discord_id = ?",
-                (ctx.author.id,),
-            )
-            senderBal = await cursor.fetchone()
-            senderBal = int(senderBal[0]) if senderBal else 0
+        if balance := await self.bot.currency_db.get_balance(ctx.author.id) < amount:
+            await ctx.send(f"Insufficient funds! You have ${balance}")
+            return
 
-            await cursor.execute(
-                "SELECT balance FROM currencies WHERE discord_id = ?",
-                (receiver.id,),
-            )
-            receiverBal = await cursor.fetchone()
-            receiverBal = int(receiverBal[0]) if receiverBal else 0
+        await self.bot.currency_db.remove_money(ctx.author.id, amount)
+        await self.bot.currency_db.add_money(receiver.id, amount)
 
-            if amount <= 0:
-                await ctx.send("Amount must be positive!")
-                return
-            if senderBal < amount:
-                await ctx.send(f"Insufficient funds! You have ${senderBal}")
-                return
+        await ctx.send(
+            f"{ctx.author.mention} donated ${amount} to {receiver.name}.",
+        )
 
-            receiverBal += amount
-            senderBal -= amount
-
-            await cursor.execute(
-                "UPDATE currencies SET balance = ? WHERE discord_id = ?",
-                (senderBal, ctx.author.id),
-            )
-            await cursor.execute(
-                "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
-                (receiver.id, receiverBal, receiverBal),
-            )
-
-            await ctx.send(
-                f"{ctx.author.mention} donated ${amount} to {receiver.name}.",
-            )
-
-            print(f"Donate command executed by {ctx.author.display_name}.\n")
+        print(f"Donate command executed by {ctx.author.display_name}.\n")
 
 
 async def setup(bot: CurrencyBot) -> None:

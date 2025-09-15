@@ -2,7 +2,7 @@ import os
 
 from dotenv import load_dotenv
 
-from CurrencyBot import CurrencyBot
+from modules.CurrencyBot import CurrencyBot
 
 # Loads environment variables
 load_dotenv()

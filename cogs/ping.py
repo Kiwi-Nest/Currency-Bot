@@ -1,9 +1,8 @@
 from discord.ext import commands
 
-from CurrencyBot import CurrencyBot
+from modules.CurrencyBot import CurrencyBot
 
 
-# Ping command adds the user to the database; it acts as a /start command
 class Ping(commands.Cog):
     def __init__(self, bot: CurrencyBot) -> None:
         self.bot = bot

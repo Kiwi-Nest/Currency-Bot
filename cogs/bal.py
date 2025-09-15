@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from CurrencyBot import CurrencyBot
+from modules.CurrencyBot import CurrencyBot
 
 
 class Bal(commands.Cog):
@@ -20,14 +20,7 @@ class Bal(commands.Cog):
         if member is None:
             member = ctx.author
 
-        async with self.bot.get_cursor() as cursor:
-            await cursor.execute(
-                "SELECT balance FROM currencies WHERE discord_id = ?",
-                (member.id,),
-            )
-            result = await cursor.fetchone()
-
-        balance = int(result[0]) if result else 0
+        balance = await self.bot.currency_db.get_balance(member.id)
 
         embed = discord.Embed(
             title="Balance",
@@ -38,7 +31,7 @@ class Bal(commands.Cog):
         embed.set_footer(text=f"{ctx.author.display_name} | Balance")
         embed.timestamp = datetime.datetime.now()
         await ctx.send(embed=embed)
-        print(f"User {member.display_name} has a balance of {balance}")
+        print(f"User {member.display_name} has a balance of ${balance}")
 
         print(f"Bal command executed by {member.display_name}.\n")
 
