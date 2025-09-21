@@ -9,7 +9,7 @@ import aiofiles
 import discord
 from discord.ext import commands
 
-from CurrencyBot import CurrencyBot
+from modules.CurrencyBot import CurrencyBot
 
 # cooldown = 86400
 cooldown = 60  # For testing purposes, set to 60 seconds
@@ -22,7 +22,7 @@ class DailyView(discord.ui.View):
         self.owner = ownerId
         self.bot = bot
         # There's no other way to achieve persistent view
-        asyncio.create_task(self.appendOwner())  # noqa: RUF006
+        asyncio.create_task(self.append_owner())  # noqa: RUF006
 
     @discord.ui.button(
         label="Remind me",
@@ -43,7 +43,7 @@ class DailyView(discord.ui.View):
 
         button.disabled = True
         self.stop()
-        await self.removeOwner()
+        await self.remove_owner()
 
         self.channel = ctx.channel
 
@@ -73,7 +73,7 @@ class DailyView(discord.ui.View):
         owner = await self.bot.fetch_user(self.owner)
         await self.channel.send(f"{owner.mention}, it's time to claim your daily!")
 
-    async def appendOwner(self) -> None:
+    async def append_owner(self) -> None:
         async with aiofiles.open("uis.json", "w+") as f:
             if not (content := (await f.read()).strip()):
                 await f.write("[]")
@@ -90,7 +90,7 @@ class DailyView(discord.ui.View):
             owners.add(self.owner)
             await f.write(json.dumps(list(owners)))
 
-    async def removeOwner(self) -> None:
+    async def remove_owner(self) -> None:
         if not pathlib.Path("uis.json").is_file():
             return
         async with aiofiles.open("uis.json", "w+") as f:
@@ -100,7 +100,7 @@ class DailyView(discord.ui.View):
             await f.write(json.dumps(list(owners)))
 
     @staticmethod
-    async def getOwners() -> set[int]:
+    async def get_owners() -> set[int]:
         if not pathlib.Path("uis.json").is_file():
             return set()
         try:
@@ -119,21 +119,10 @@ class Daily(commands.Cog):
     async def daily(self, ctx: commands.Context) -> None:
         await ctx.defer()
 
-        async with self.bot.get_cursor() as cursor:
-            await cursor.execute(
-                "SELECT balance FROM currencies WHERE discord_id = ?",
-                (ctx.author.id,),
-            )
+        daily_mon = random.randint(101, 10000) if random.randint(1, 100) == 1 else random.randint(50, 100)
+        await self.bot.currency_db.add_money(ctx.author.id, daily_mon)
 
-            result = await cursor.fetchone()
-            balance = int(result[0]) if result else 0
-            daily_mon = random.randint(101, 10000) if random.randint(1, 100) == 1 else random.randint(50, 100)
-            new_balance = balance + daily_mon
-
-            await cursor.execute(
-                "INSERT INTO currencies (discord_id, balance) VALUES (?, ?) ON CONFLICT(discord_id) DO UPDATE SET balance = ?",
-                (ctx.author.id, new_balance, new_balance),
-            )
+        new_balance = await self.bot.currency_db.get_balance(ctx.author.id)
 
         print(f"User {ctx.author.display_name} has a balance of {new_balance}")
 
@@ -194,7 +183,7 @@ class Daily(commands.Cog):
 
 async def setup(bot: CurrencyBot) -> None:
     # Persistent view
-    for ownerId in await DailyView.getOwners():
-        bot.add_view(DailyView(bot, ownerId))
+    for owner_id in await DailyView.get_owners():
+        bot.add_view(DailyView(bot, owner_id))
 
     await bot.add_cog(Daily(bot))
