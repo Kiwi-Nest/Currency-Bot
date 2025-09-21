@@ -74,11 +74,11 @@ class PrunerCog(commands.Cog):
 
             # Find which of the prunable roles the member actually has
             roles_to_remove = [role for role in member.roles if role in prunable_roles]
-            
+
             # Also add any roles that start with "Gradient: " prefix
             gradient_roles = [role for role in member.roles if role.name.startswith("Gradient: ")]
             roles_to_remove.extend(gradient_roles)
-            
+
             # Remove duplicates in case a gradient role was already in prunable_roles
             roles_to_remove = list(set(roles_to_remove))
 
