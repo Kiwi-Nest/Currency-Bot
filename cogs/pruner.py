@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 
 class PrunerCog(commands.Cog):
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         bot: commands.Bot,
         user_db: UserDB,
@@ -75,8 +75,10 @@ class PrunerCog(commands.Cog):
             # Find which of the prunable roles the member actually has
             roles_to_remove = [role for role in member.roles if role in prunable_roles]
 
-            # Also add any roles that start with "Gradient: " prefix
-            gradient_roles = [role for role in member.roles if role.name.startswith("Gradient: ")]
+            # Also add any roles that start with matching prefix
+            gradient_roles = [
+                role for role in member.roles if role.name.startswith("Colour: ") or role.name.startswith("Gradient: ")
+            ]
             roles_to_remove.extend(gradient_roles)
 
             # Remove duplicates in case a gradient role was already in prunable_roles
