@@ -45,8 +45,7 @@ class Donate(commands.Cog):
                 f"{ctx.author.mention} donated ${amount} to {receiver.mention}.",
             )
         else:
-            balance = await self.bot.currency_db.get_balance(ctx.author.id)
-            await ctx.send(f"Insufficient funds! You only have ${balance}.")
+            await ctx.send("Transaction failed. Please try again.")
 
         print(f"Donate command executed by {ctx.author.display_name}.\n")
 

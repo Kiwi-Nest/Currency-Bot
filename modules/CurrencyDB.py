@@ -1,4 +1,3 @@
-import asyncio
 from typing import ClassVar
 
 from modules.Database import Database
@@ -10,10 +9,8 @@ class CurrencyDB:
 
     def __init__(self, database: Database) -> None:
         self.database = database
-        # No other way to do this
-        asyncio.create_task(self._postInit())  # noqa: RUF006
 
-    async def _postInit(self) -> None:
+    async def post_init(self) -> None:
         async with self.database.get_conn() as conn:
             await conn.execute(
                 f"""

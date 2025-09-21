@@ -22,15 +22,10 @@ select = ["ALL"]
 extend-select = ["ALL"]
 extend-safe-fixes = ["ALL"]
 extend-ignore = [
+  "C901",
   "T201",     # Ignore print
-  "ASYNC230",
   "DTZ005",
-  "N802",
-  "N803",
-  "N815",
-  "N816",     # allow camelcase
   "N806",     # allow dunder
-  "PD002",    # allow pandas inplace
   "S311",     # allow non-crypto random
   "INP001",   # implicit namespace
   "D100",     # Missing Docstring
@@ -38,10 +33,10 @@ extend-ignore = [
   "D102",     # Missing Docstring
   "D103",     # Missing Docstring
   "D107",     # Missing Docstring
+  "FBT001",   # boolean-default-value-positional-argument
   "FBT002",   # boolean-default-value-positional-argument
+  "FBT003",   # boolean-default-value-positional-argument
   "ERA001",   # Commented out code
-  "FIX002",   # Contains todo
-  "TD003",    # Missing issue link for todo
 ]
 preview = true
 
