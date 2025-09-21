@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 
 class PrunerCog(commands.Cog):
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         bot: commands.Bot,
         user_db: UserDB,
