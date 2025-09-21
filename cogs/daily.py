@@ -74,30 +74,23 @@ class DailyView(discord.ui.View):
         await self.channel.send(f"{owner.mention}, it's time to claim your daily!")
 
     async def append_owner(self) -> None:
-        async with aiofiles.open("uis.json", "w+") as f:
-            if not (content := (await f.read()).strip()):
-                await f.write("[]")
-                owners = set()
-            else:
-                try:
-                    owners = set[int](json.loads(content))
-                    if self.owner in owners:
-                        return
+        owners: set[int] = await self.get_owners()
+        if self.owner in owners:
+            return
 
-                except json.decoder.JSONDecodeError:
-                    owners = set()
-
-            owners.add(self.owner)
-            await f.write(json.dumps(list(owners)))
+        owners.add(self.owner)
+        async with aiofiles.open("uis.json", "w") as f:
+            await f.write(json.dumps(sorted(owners)))
 
     async def remove_owner(self) -> None:
-        if not pathlib.Path("uis.json").is_file():
-            return
-        async with aiofiles.open("uis.json", "w+") as f:
-            owners = set[int](json.loads(await f.read()))
+        owners: set[int] = await self.get_owners()
+        try:
             owners.remove(self.owner)
-
-            await f.write(json.dumps(list(owners)))
+            async with aiofiles.open("uis.json", "w") as f:
+                await f.write(json.dumps(sorted(owners)))
+        except KeyError:
+            # Owner not in set, do nothing
+            pass
 
     @staticmethod
     async def get_owners() -> set[int]:
@@ -177,8 +170,6 @@ class Daily(commands.Cog):
                 f"You have already claimed this within the last 24 hours, please wait {hours}h {minutes}m {seconds}s",
                 embed=embed,
             )
-
-        print(f"Daily command executed by {ctx.author.display_name}.\n")
 
 
 async def setup(bot: CurrencyBot) -> None:

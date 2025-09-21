@@ -23,18 +23,30 @@ class Donate(commands.Cog):
         receiver: discord.Member,
         amount: Range[int, 1],
     ) -> None:
-        await ctx.defer()
+        # Optional: Add checks to prevent donating to self or bots
+        if receiver.id == ctx.author.id:
+            await ctx.send("You cannot donate to yourself.", ephemeral=True)
+            return
 
-        if balance := await self.bot.currency_db.get_balance(ctx.author.id) < amount:
+        if (balance := await self.bot.currency_db.get_balance(ctx.author.id)) < amount:
             await ctx.send(f"Insufficient funds! You have ${balance}")
             return
 
-        await self.bot.currency_db.remove_money(ctx.author.id, amount)
-        await self.bot.currency_db.add_money(receiver.id, amount)
+        await ctx.defer()
 
-        await ctx.send(
-            f"{ctx.author.mention} donated ${amount} to {receiver.name}.",
+        success = await self.bot.currency_db.transfer_money(
+            sender_id=ctx.author.id,
+            receiver_id=receiver.id,
+            amount=amount,
         )
+
+        if success:
+            await ctx.send(
+                f"{ctx.author.mention} donated ${amount} to {receiver.mention}.",
+            )
+        else:
+            balance = await self.bot.currency_db.get_balance(ctx.author.id)
+            await ctx.send(f"Insufficient funds! You only have ${balance}.")
 
         print(f"Donate command executed by {ctx.author.display_name}.\n")
 
