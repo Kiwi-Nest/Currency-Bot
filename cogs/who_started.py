@@ -24,9 +24,8 @@ async def who_started(interaction: discord.Interaction, message: discord.Message
         )
         return
 
-    display_name = invoker.global_name or invoker.name
     await interaction.response.send_message(
-        f"This was started by: **{display_name}** (`{invoker}` | ID: {invoker.id})",
+        f"This was started by: **{invoker.display_name}** (`{invoker}` | ID: {invoker.id})",
         ephemeral=True,
     )
 

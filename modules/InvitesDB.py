@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from modules.Database import snowflake
 from modules.dtypes import GuildId, InviterId, UserId
 
 if TYPE_CHECKING:
@@ -39,10 +40,10 @@ class InvitesDB:
         async with self.database.get_conn() as conn:
             # Use INSERT OR IGNORE to replicate MariaDB's INSERT IGNORE behavior
             await conn.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS invites (
-                    invitee_id INTEGER NOT NULL CHECK(invitee_id > 1000000 AND invitee_id < 10000000000000000000),
-                    guild_id INTEGER NOT NULL CHECK(guild_id > 1000000 AND guild_id < 10000000000000000000),
+                    invitee_id INTEGER NOT NULL {snowflake("invitee_id")},
+                    guild_id INTEGER NOT NULL {snowflake("guild_id")},
                     inviter_id INTEGER, -- Can be NULL if inviter is unknown
                     joined_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
                     PRIMARY KEY (invitee_id, guild_id),
@@ -142,7 +143,7 @@ class InvitesDB:
             rows = await cursor.fetchall()
             for inviter, invitees_str in rows:
                 if invitees_str:
-                    inviter_id: InviterId = UserId(inviter) if inviter is not None else None
+                    inviter_id = UserId(inviter) if inviter is not None else None
                     typed_invitees = [UserId(int(i)) for i in invitees_str.split(",")]
                     result[inviter_id] = typed_invitees
         return result

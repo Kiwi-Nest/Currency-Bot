@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
-if TYPE_CHECKING:
-    import aiosqlite
+from modules.Database import snowflake
 
-    from modules.Database import Database
+if TYPE_CHECKING:
+    from modules.Database import Database, WriteTx
     from modules.dtypes import GuildId, UserId
 
 log = logging.getLogger(__name__)
@@ -55,41 +55,29 @@ class CurrencyLedgerDB:
             await conn.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
-                    -- Core Fields
-                    ledger_id       INTEGER PRIMARY KEY,
-                    guild_id        INTEGER NOT NULL CHECK(guild_id > 1000000 AND guild_id < 10000000000000000000),
-                    timestamp       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
-
-                    -- Event Type
-                    event_type      TEXT NOT NULL CHECK(event_type IN ('MINT', 'BURN', 'TRANSFER')),
-
-                    -- Event Reason
-                    event_reason    TEXT NOT NULL, -- e.g., 'DAILY_CLAIM', 'P2P_TRANSFER'
-
-                    -- The Actors
-                    sender_id       INTEGER NOT NULL CHECK(sender_id >= 0),
-                    receiver_id     INTEGER NOT NULL CHECK(receiver_id >= 0),
-
-                    -- The Amount
-                    amount          INTEGER NOT NULL CHECK(amount > 0),
-
-                    -- Audit Trail
-                    initiator_id    INTEGER CHECK(initiator_id > 1000000 AND initiator_id < 10000000000000000000),
-                    reference_id    TEXT,
-
+                    ledger_id    INTEGER PRIMARY KEY,
+                    guild_id     INTEGER NOT NULL {snowflake("guild_id")},
+                    timestamp    INTEGER NOT NULL DEFAULT (unixepoch()),
+                    event_type   TEXT NOT NULL CHECK(event_type IN ('MINT', 'BURN', 'TRANSFER')),
+                    event_reason TEXT NOT NULL,
+                    sender_id    INTEGER NOT NULL CHECK(sender_id >= 0),
+                    receiver_id  INTEGER NOT NULL CHECK(receiver_id >= 0),
+                    amount       INTEGER NOT NULL CHECK(amount > 0),
+                    initiator_id INTEGER {snowflake("initiator_id")},
+                    reference_id TEXT,
                     CHECK(sender_id <> receiver_id)
-                ) STRICT;
+                ) STRICT
                 """,
             )
             # Optional: Add indexes for faster analytics
             await conn.execute(
                 f"""
-                CREATE INDEX IF NOT EXISTS idx_ledger_event_type ON {self.TABLE_NAME}(event_type);
+                CREATE INDEX IF NOT EXISTS idx_ledger_event_type ON {self.TABLE_NAME}(event_type)
                 """,
             )
             await conn.execute(
                 f"""
-                CREATE INDEX IF NOT EXISTS idx_ledger_actors ON {self.TABLE_NAME}(sender_id, receiver_id);
+                CREATE INDEX IF NOT EXISTS idx_ledger_actors ON {self.TABLE_NAME}(sender_id, receiver_id)
                 """,
             )
             await conn.commit()
@@ -97,7 +85,7 @@ class CurrencyLedgerDB:
 
     async def log_event(
         self,
-        conn: aiosqlite.Connection,  # Must be called within an existing transaction
+        tx: WriteTx,
         guild_id: GuildId,
         event_type: EventType,
         event_reason: EventReason,
@@ -127,12 +115,12 @@ class CurrencyLedgerDB:
             initiator_id,
             reference_id,
         )
-        await conn.execute(sql, params)
+        await tx.execute(sql, params)
         log.debug("Logged currency event: %s - %s", event_type, event_reason)
 
     async def bulk_log_event(
         self,
-        conn: aiosqlite.Connection,
+        tx: WriteTx,
         events: list[tuple[GuildId, EventType, EventReason, int, int, int, UserId | None]],
     ) -> None:
         """Efficiently log multiple events in one go."""
@@ -143,4 +131,4 @@ class CurrencyLedgerDB:
             INSERT INTO {self.TABLE_NAME} (guild_id, event_type, event_reason, sender_id,
             receiver_id, amount, initiator_id) VALUES (?, ?, ?, ?, ?, ?, ?)
         """  # noqa: S608
-        await conn.executemany(sql, events)
+        await tx.executemany(sql, events)

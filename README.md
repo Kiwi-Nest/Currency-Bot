@@ -1,118 +1,154 @@
 # Feijoa
 
-Feijoa is a comprehensive Discord bot with an economy, games, moderation tools, and automated server management.
+A Discord bot with economy, leveling, paper trading, moderation, and automated server management.
 
 ---
 
-## Features for Server Members
+## For Server Members
 
-This section details all commands and automated features that a typical server member can interact with.
+#### 💰 Economy
 
-#### 💰 Economy & Currency
-
-This category covers commands related to earning, spending, and viewing virtual currency.
-
-- **`/daily`**: Claim your daily currency reward.
-  - Includes a random chance to hit a **jackpot** for a massive payout.
-  - Provides interactive buttons to **set reminder preferences** (Once, Always, or Never).
-  - Includes a button to **share your winnings** to the channel.
-- **`/bal [member]`**: Check your (or another's) wallet balance and total bump count.
-- **`/donate <member> <amount>`**: Give currency to another user (aliased as `/give`).
-- **`/leaderboard <stat>`**: View the server's top users.
-  - **Stat options**: 💰 Currency, ⬆️ Bumps, ⭐ Level, ✨ XP.
-- **`/take [limb]`** & **`/harvest [organ]`**: (Guild-Specific) A high-risk, high-reward command to attempt to... _acquire_... and sell items for cash.
-- **`/blackjack <bet>`**: Start an interactive game of Blackjack (21) against the bot.
+| Command | Description |
+|-|-|
+| `/daily` | Claim 20–50 credits (1% chance at a 100–1,000 jackpot). Buttons to set DM reminders and share your result. |
+| `/bal [member]` | View wallet balance and bump count. |
+| `/donate <member> <amount>` | Transfer currency to another user. Alias: `/give`. |
+| `/leaderboard <stat>` | Top 200 users by Currency, Bumps, Level, or XP. Paginated with 🥇🥈🥉 medals. |
+| `/blackjack <bet>` | Blackjack against the bot. Hit, Stand, Double Down, Split, Surrender. 6-deck shoe; Blackjack pays ×2.5. 3-min timeout. |
+| `/blackjack-stats` | Your personal win/loss record and net profit. |
+| `/blackjack-leaderboard` | Top 10 players by net credits. |
 
 ---
 
-#### ✨ Leveling & Activity
+#### ✨ Leveling & Voice
 
-The bot tracks user activity and rewards it with XP and levels.
-
-- **Automatic XP**: Earn XP automatically by sending messages in the server.
-- **`/level rank [member]`**: Check your (or another's) current level, total XP, and see a progress bar to the next level.
-- **`/level opt-out`**: Exclude yourself from the leveling system and stop gaining XP.
-- **`/level opt-in`**: Re-join the leveling system and start gaining XP again.
-
----
-
-#### 🤝 Social & Server Utilities
-
-- **`/invites top`**: See the server leaderboard for who has invited the most members.
-- **`/invites mylist`**: Show a list of all the members you have personally invited.
-- **`/listroles`**: Lists all roles in the server, sorted by permissions and hierarchy.
+- **XP gain**: 1 XP per message (≥4 unique lowercase letters), 5-min cooldown per channel. Bonus +4 XP after 6+ hours away.
+- **`/level rank [member]`**: Level, total XP, progress bar, and XP to next level.
+- **`/level opt-out`** / **`/level opt-in`**: Leave or re-join the leveling system.
+- **`/vcinfo [member]`**: Peak concurrent users today (server view) or your total VC minutes and last-seen time (member view).
+- **`/vcheatmap`**: Heatmap image of voice channel activity over time.
 
 ---
 
-#### 🤖 Automated Features (What Happens for You)
+#### 🌐 Translation
 
-- **Bump Rewards**: When you successfully use `/bump` (for Disboard), the bot will automatically reward you with a random amount of currency, increment your bump stat, and post a "thank you" message.
-- **Reaction Roles**: You can get roles by adding a reaction to specific messages set up by admins. Removing your reaction also removes the role.
+- **`/language <lang>`**: Set your language (`en`, `bg`, `ro`). Messages you send in a different language than the server default are auto-translated for you.
+- **`/autotranslate <enabled>`**: Toggle auto-translation on/off.
+- **Translate** *(right-click → Apps)*: Manually translate any message.
+- **Flag reactions**: React 🇬🇧 🇺🇸 🇧🇬 🇷🇴 to any message for an instant translation.
+
+---
+
+#### 🔔 Reminders
+
+- **`@bot remind [me] [to] <time> <message>`**: Natural-language reminders (`in 5 minutes`, `tomorrow at 5pm`). Confirms with a Discord timestamp.
+- **`/reminders list`**: All your active reminders.
+- **`/reminders delete <id>`**: Cancel a reminder.
+- Fired reminders include **Snooze** buttons: 15m · 1h · 1d.
 
 ---
 
 #### 📈 Paper Trading
 
-This is a full-featured paper trading simulation, allowing users to buy and sell leveraged stocks with their server currency.
+Leveraged stock simulation using server currency. Tickers: TQQQ, TNA, SOXL, FAZ, TMF, UGL, BITX.
 
-- **`/stocks`**: Lists all available stocks (leveraged ETFs) with descriptions of what they track.
-- **`/price`**: Gets the latest cached prices for all tradable stocks.
-- **`/portfolio`**: View your complete trading portfolio.
-  - Shows cash balance, total P&L, and a detailed breakdown of all open positions (long and short).
-- **`/buy <ticker> <amount>`**: Open a "long" position, betting that a stock's price will rise.
-- **`/short <ticker> <amount>`**: Open a "short" position, betting that a stock's price will fall.
-- **`/close <position_id> [amount]`**: Close all (or a partial dollar amount) of an open position to lock in your profit or loss.
+| Command | Description |
+|-|-|
+| `/stocks` | All tradable assets and what they track. |
+| `/price` | Current cached prices and market status. |
+| `/buy <ticker> <amount> [leverage]` | Open a long position. Up to 10× leverage. |
+| `/short <ticker> <amount> [leverage]` | Open a short position. Same leverage rules. |
+| `/close <position_id> [amount]` | Close all or part of a position. Shows realized P&L. |
+| `/portfolio [member]` | Full portfolio: cash, equity, P&L, all open positions. Can view others'. |
 
----
-
-## Features for Staff & Administrators
-
-This section details the commands and automated systems for server management, moderation, and configuration.
-
-#### 🛡️ Moderation Suite
-
-- **`/moderate ban <member> [reason] [delete_messages]`**: Bans a user with options to delete their recent message history.
-- **`/moderate kick <member> [reason]`**: Kicks a user from the server.
-- **`/moderate timeout <member> <duration> [reason]`**: Times out a user for a specified duration (e.g., `10m`, `1h`, `7d`).
-- **`/moderate untimeout <member> [reason]`**: Removes an active timeout from a user.
-- **`/moderate mute <member> [reason]`**: Mutes a user by assigning the configured Muted role.
-- **`/moderate unmute <member> [reason]`**: Removes the Muted role from a user.
+Positions are auto-liquidated if margin is exhausted; you'll get a DM.
 
 ---
 
-#### ⚙️ Server Configuration
+#### 🤝 Social & Utilities
 
-- **`/config autodiscover`**: **(Recommended Setup)** Scans server channels and roles to intelligently suggest settings (e.g., finds a "mod-log" channel and "Muted" role) for you to approve.
-- **`/config view`**: Displays all current bot settings for the server in a clean embed.
-- **`/config channel <feature> <channel>`**: Manually sets a channel for a specific feature (e.g., `mod_log_channel_id`, `level_up_channel_id`).
-- **`/config role <feature> <role>`**: Manually sets a role for a specific feature (e.g., `bumper_role_id`, `muted_role_id`, `xp_opt_out_role_id`).
-- **`/config forward ...`**: A subgroup of commands to set up automatic embed forwarding from a source bot to a target channel.
-- **`/config prune ...`**: A subgroup of commands to configure automatic role pruning for inactive members (setting days and roles to prune).
-- **Reaction Role Debug (Context Menu)**: Right-click a message > Apps > "Debug Reaction Role" to get a detailed DM report on its validity, security (checking for permissions), and role/emoji mapping.
+| Command | Description |
+|-|-|
+| `/invites top` | Leaderboard of top inviters. |
+| `/invites mylist` | Private list of members you've invited. |
+| `/pingrole <role>` | Ping members of a configured event role. 3 uses/min. |
+| `/mojangprofile <player>` | Minecraft profile lookup (username or UUID). |
+| `/help [command]` | List all commands or get detail on one. |
+| **Who started this?** *(right-click → Apps)* | Identifies who invoked a slash command or sent a reply. |
 
 ---
 
-#### 🤖 Automated Backend Management
+#### 🔒 Privacy & Data
 
-- **Mod Logging**: All staff actions executed via `/moderate` are automatically logged to the configured `mod_log_channel_id`, including the moderator, target, and reason.
-- **Join/Leave Logging**: A clean, embed-based log of members joining, rejoining, or leaving is sent to the `join_leave_log_channel_id`.
-- **Activity Tracking**: The bot passively monitors `on_message` and `on_interaction` events to keep a `last_active_timestamp` for all users, powering the inactivity pruner.
-- **Smart Bump Reminders**: The bot listens for Disboard bumps, waits 2 hours, and then pings the `bumper_role_id`. If another 10 minutes pass, it pings the `backup_bumper_role_id`.
-- **Server Stats Channels**: Automatically updates the names of designated voice channels to display live server statistics (e.g., "All members: 123", "Tag Users: 45").
-- **Invite Tracking**: On `on_member_join`, the bot compares current invite uses against a cache to determine which invite was used and credits the correct inviter in the database.
-- **Role Pruning**:
-  - **Inactivity Pruner**: (Runs hourly) Checks all members against the `inactivity_days` setting. If a member is inactive, it removes any roles specified in the `roles_to_prune` config list.
-  - **Custom Role Pruner**: (Runs hourly) Automatically deletes any roles with a name starting with `Custom: ` (configurable) that are older than 30 days.
+| Command | Description |
+|-|-|
+| `/my-data` | Export all your data (activity, reminders, positions, ledger) as JSON. |
+| `/forget-me` | Delete your data across all servers. Requires confirmation; ledger retained for audit. |
+
+---
+
+#### 🤖 Automated Features
+
+- **Bump rewards**: Successful `/bump` (Disboard) earns 30–50 currency and increments your bump stat. Reminders fire at +2h and +2h10m if the server hasn't been bumped again.
+- **Reaction roles**: React to designated messages to gain roles; remove the reaction to lose them.
+- **Voice streaks**: When everyone leaves VC, the bot posts a session summary (duration, peak users, unique participants) — for sessions with 2+ users lasting 60+ seconds.
+- **Inactive role**: Assigned automatically when a member's last activity exceeds the configured threshold; removed the moment they become active again.
+
+---
+
+## For Staff & Administrators
+
+#### 🛡️ Moderation
+
+| Command | Description |
+|-|-|
+| `/moderate ban <member> [reason] [delete_messages]` | Ban with optional message history deletion. |
+| `/moderate kick <member> [reason]` | Kick from server. |
+| `/moderate timeout <member> <duration> [reason]` | Timeout (e.g. `10m`, `1h`, `7d`). |
+| `/moderate untimeout <member> [reason]` | Remove active timeout. |
+| `/moderate mute <member> [reason]` | Assign the configured Muted role. |
+| `/moderate unmute <member> [reason]` | Remove the Muted role. |
+| `/listroles` | All guild roles sorted by hierarchy and permissions. |
+
+---
+
+#### ⚙️ Configuration
+
+| Command | Description |
+|-|-|
+| `/config autodiscover` | Scans channels/roles and suggests settings for approval. |
+| `/config view` | All current bot settings. |
+| `/config channel <feature> <channel>` | Set a channel for a feature. |
+| `/config role <feature> <role>` | Set a role for a feature. |
+| `/config forward ...` | Auto-forward embeds from a source bot to a target channel. |
+| `/config prune ...` | Set inactivity threshold and roles to prune. |
+| **Debug Reaction Role** *(right-click → Apps)* | DMs a validity + permission report for a reaction role message. |
+
+---
+
+#### 🤖 Automated Backend
+
+- **Mod logging**: All `/moderate` actions logged to `mod_log_channel_id` with moderator, target, and reason.
+- **Join/leave logging**: Embed log sent to `join_leave_log_channel_id`, including inviter, account age, and onboarding status. Auto-verification runs on smart indicators (avatar decoration, booster status, onboarding completion).
+- **Anti-spam**: Auto-timeout for members sending identical messages across multiple channels rapidly.
+- **Activity tracking**: Passively records last-active timestamps across messages, interactions, voice, reactions, and more — powers the inactivity pruner.
+- **Inactivity pruner** *(hourly)*: Removes configured roles from members inactive beyond the threshold.
+- **Custom role pruner** *(hourly)*: Deletes roles prefixed `Custom: ` older than 30 days.
+- **Server stats channels**: Updates designated voice channel names with live member counts every 5 minutes.
+- **GDPR retention** *(weekly)*: Cleans up stale reminders (90d+), inactive user records (600d+), and old VC sessions (90d+).
+- **Message forwarder**: Auto-forwards messages from a configured source bot (e.g. QOTD) to a target channel.
 
 ---
 
 #### 🖥️ Game Server Administration
 
-(Requires `MC_GUILD_ID` and `SERVERS_PATH` to be set)
+*(Requires `MC_GUILD_ID` and `SERVERS_PATH`)*
 
-- **`/server start <name>`**: Starts a game server via its `tmux.sh` script.
-- **`/server stop <name>`**: Stops a game server via its `tmux.sh` script.
-- **`/server rcon <name> <command>`**: Sends an RCON command to an online server.
-- **`/server list`**: Shows the status (Online/Offline) of all managed servers.
-- **`/server status <name>`**: Shows detailed info for a specific server.
-- **`/server refresh`**: Forces the bot to re-scan all server statuses.
+| Command | Description |
+|-|-|
+| `/server list` | Online/Offline status for all managed servers. |
+| `/server status <name>` | Detailed info for a specific server. |
+| `/server start <name>` | Start a server. |
+| `/server stop <name>` | Stop a server. |
+| `/server rcon <name> <command>` | Send an RCON command. |
+| `/server refresh` | Force re-scan of all server statuses. |

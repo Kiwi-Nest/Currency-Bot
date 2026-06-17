@@ -1,5 +1,7 @@
+# ruff: noqa: PGH003
 import logging
 from typing import TYPE_CHECKING, Any, Final, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 import discord
 from discord import app_commands
@@ -8,11 +10,8 @@ from discord.ext import commands
 from modules.dtypes import GuildId, GuildInteraction, RoleId, UserId
 from modules.guild_cog import GuildOnlyHybridCog
 from modules.security_utils import (
-    SecurityCheckError,
-    check_role_safety,
-    ensure_bot_hierarchy,
-    ensure_role_safety,
-    ensure_verifiable_role,
+    check_cosmetic_role_manageable,
+    check_verified_role_manageable,
 )
 
 if TYPE_CHECKING:
@@ -134,16 +133,16 @@ class RoleSelectView(discord.ui.View):
             options=options,
             row=0,
         )
-        select.callback = self._make_select_callback(select, start, end)
+        select.callback = self._make_select_callback(select, start, end)  # type: ignore
         self.add_item(select)
 
         confirm_label = f"Confirm ({len(self._staged)} selected)" if self._staged else "Confirm"
         confirm_btn = discord.ui.Button(label=confirm_label, style=discord.ButtonStyle.success, row=1)
-        confirm_btn.callback = self._confirm_callback
+        confirm_btn.callback = self._confirm_callback  # type: ignore
         self.add_item(confirm_btn)
 
         cancel_btn = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary, row=1)
-        cancel_btn.callback = self._cancel_callback
+        cancel_btn.callback = self._cancel_callback  # type: ignore
         self.add_item(cancel_btn)
 
         if self.total_pages > 1:
@@ -159,8 +158,8 @@ class RoleSelectView(discord.ui.View):
                 disabled=self.page >= self.total_pages - 1,
                 row=2,
             )
-            prev_btn.callback = self._make_page_callback(-1)
-            next_btn.callback = self._make_page_callback(1)
+            prev_btn.callback = self._make_page_callback(-1)  # type: ignore
+            next_btn.callback = self._make_page_callback(1)  # type: ignore
             self.add_item(prev_btn)
             self.add_item(next_btn)
 
@@ -205,7 +204,7 @@ class RoleSelectView(discord.ui.View):
                     current.remove(r)
         await self.config_db.set_setting(self.guild_id, self.setting, current)
         for item in self.children:
-            item.disabled = True
+            item.disabled = True  # type: ignore
         verb = "added to" if self.action == "add" else "removed from"
         mentions = " ".join(f"<@&{r}>" for r in self._staged)
         await interaction.response.edit_message(
@@ -216,13 +215,13 @@ class RoleSelectView(discord.ui.View):
 
     async def _cancel_callback(self, interaction: discord.Interaction) -> None:
         for item in self.children:
-            item.disabled = True
+            item.disabled = True  # type: ignore
         await interaction.response.edit_message(content="❌ No changes made.", view=self)
         self.stop()
 
     async def on_timeout(self) -> None:
         for item in self.children:
-            item.disabled = True
+            item.disabled = True  # type: ignore
         if self.message:
             await self.message.edit(
                 content="⏱️ This menu expired. Run the command again to continue.",
@@ -263,7 +262,7 @@ class AutodiscoverView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(
+    @discord.ui.button(  # ty: ignore[invalid-argument-type]
         label="Save Suggestions",
         style=discord.ButtonStyle.success,
         emoji="💾",
@@ -285,14 +284,14 @@ class AutodiscoverView(discord.ui.View):
                 saved_count += 1
 
         for child in self.children:
-            child.disabled = True
+            child.disabled = True  # type: ignore
 
         await interaction.response.edit_message(
             content=f"✅ Saved **{saved_count}** suggested settings! You can view them with `/config view`.",
             view=self,
         )
 
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)  # ty: ignore[invalid-argument-type]
     async def cancel_button(
         self,
         interaction: GuildInteraction,
@@ -300,11 +299,17 @@ class AutodiscoverView(discord.ui.View):
     ) -> None:
         """Cancel the operation and disable the view."""
         for child in self.children:
-            child.disabled = True
+            child.disabled = True  # type: ignore
         await interaction.response.edit_message(
             content="❌ Operation cancelled. No settings were changed.",
             view=self,
         )
+
+
+async def _timezone_autocomplete(_interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    zones = sorted(available_timezones())
+    matches = [z for z in zones if current.lower() in z.lower()][:25]
+    return [app_commands.Choice(name=z, value=z) for z in matches]
 
 
 def get_suggestions(guild: discord.Guild) -> dict[str, int | None]:  # noqa: PLR0912
@@ -400,6 +405,7 @@ class Config(
 
         When role is None, shows a paginated button view to pick interactively.
         """
+        assert interaction.guild_id is not None
         guild_id = GuildId(interaction.guild_id)
         config = await self.config_db.get_guild_config(guild_id)
 
@@ -411,8 +417,7 @@ class Config(
                     for r in interaction.guild.roles
                     if not r.is_default()
                     and RoleId(r.id) not in in_list
-                    and check_role_safety(r).ok
-                    and interaction.guild.me.top_role > r
+                    and check_cosmetic_role_manageable(interaction.guild, r).ok
                 ]
                 if not roles:
                     await interaction.response.send_message(
@@ -451,42 +456,7 @@ class Config(
         await self.config_db.set_setting(guild_id, setting, current)
         await interaction.response.send_message(msg, ephemeral=True)
 
-    async def on_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        """Handle errors for all commands in this Cog."""
-        # Unwrap CommandInvokeError if present
-        original_error = error.original if isinstance(error, app_commands.CommandInvokeError) else error
-
-        if isinstance(original_error, SecurityCheckError):
-            await interaction.response.send_message(
-                f"❌ **Configuration Blocked:**\n{original_error}",
-                ephemeral=True,
-            )
-        elif isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                f"❌ You do not have the required permissions: {', '.join(error.missing_permissions)}",
-                ephemeral=True,
-            )
-        elif isinstance(error, app_commands.BotMissingPermissions):
-            await interaction.response.send_message(
-                f"❌ I do not have the required permissions: {', '.join(error.missing_permissions)}",
-                ephemeral=True,
-            )
-        elif isinstance(error, app_commands.AppCommandError):
-            # Generic AppCommandError (e.g., from transformers or validators)
-            await interaction.response.send_message(str(error), ephemeral=True)
-        else:
-            log.exception("Unhandled error in Config cog: %s", error)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ An unexpected error occurred.",
-                    ephemeral=True,
-                )
-
-    @app_commands.command(
+    @app_commands.command(  # ty: ignore[invalid-argument-type]
         name="view",
         description="Display the current bot configuration for this server.",
     )
@@ -578,7 +548,7 @@ class Config(
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(
+    @app_commands.command(  # ty: ignore[invalid-argument-type]
         name="channel",
         description="Set or clear a feature's channel.",
     )
@@ -637,7 +607,7 @@ class Config(
                 ephemeral=True,
             )
 
-    @app_commands.command(name="role", description="Set or clear a feature's role.")
+    @app_commands.command(name="role", description="Set or clear a feature's role.")  # ty: ignore[invalid-argument-type]
     @app_commands.describe(
         feature="The feature to configure the role for.",
         role="The role to use. Omit to disable the feature.",
@@ -681,10 +651,9 @@ class Config(
 
             # Run our centralized security checks (raises SecurityCheckError on failure)
             if require_no_perms:
-                ensure_role_safety(role)
+                check_cosmetic_role_manageable(interaction.guild, role).raise_if_not_ok()
             else:
-                ensure_verifiable_role(role)
-            ensure_bot_hierarchy(interaction, role)
+                check_verified_role_manageable(interaction.guild, role).raise_if_not_ok()
 
         value = role.id if role else None
         await self.config_db.set_setting(
@@ -704,7 +673,7 @@ class Config(
                 ephemeral=True,
             )
 
-    @app_commands.command(
+    @app_commands.command(  # ty: ignore[invalid-argument-type]
         name="autodiscover",
         description="Automatically discover and suggest settings.",
     )
@@ -749,7 +718,18 @@ class Config(
         )
         await interaction.followup.send(embed=embed, view=view)
 
-    @app_commands.command(name="language", description="Set the server's default language.")
+    @app_commands.command(name="timezone", description="Set the server's default timezone.")  # ty: ignore[invalid-argument-type]
+    @app_commands.autocomplete(timezone=_timezone_autocomplete)
+    async def set_server_timezone(self, interaction: GuildInteraction, timezone: str) -> None:
+        try:
+            ZoneInfo(timezone)
+        except ZoneInfoNotFoundError:
+            await interaction.response.send_message(f"❌ `{timezone}` is not a valid timezone.", ephemeral=True)
+            return
+        await self.config_db.set_setting(GuildId(interaction.guild.id), "guild_timezone", timezone)
+        await interaction.response.send_message(f"✅ Server timezone set to **{timezone}**.")
+
+    @app_commands.command(name="language", description="Set the server's default language.")  # ty: ignore[invalid-argument-type]
     @app_commands.choices(
         lang=[
             app_commands.Choice(name="English 🇬🇧", value="en"),
@@ -772,7 +752,7 @@ class Config(
         description="Configure message forwarding settings.",
     )
 
-    @forward.command(
+    @forward.command(  # ty: ignore[invalid-argument-type]
         name="set-source",
         description="Set the bot to forward messages from.",
     )
@@ -805,7 +785,7 @@ class Config(
             ephemeral=True,
         )
 
-    @forward.command(
+    @forward.command(  # ty: ignore[invalid-argument-type]
         name="set-target",
         description="Set the channel to forward embeds to.",
     )
@@ -831,12 +811,13 @@ class Config(
             ephemeral=True,
         )
 
-    @forward.command(
+    @forward.command(  # ty: ignore[invalid-argument-type]
         name="disable",
         description="Disable the message forwarder for this server.",
     )
     async def disable_forwarder(self, interaction: GuildInteraction) -> None:
         """Disable the forwarder by clearing both settings."""
+        assert interaction.guild_id is not None
         await self.config_db.set_setting(
             GuildId(interaction.guild_id),
             "qotd_source_bot_id",
@@ -858,11 +839,11 @@ class Config(
         description="Configure automatic pruning settings.",
     )
 
-    @prune.command(
+    @prune.command(  # ty: ignore[invalid-argument-type]
         name="set-inactive-threshold",
         description="Set the number of days of inactivity before assigning the inactive role.",
     )
-    @app_commands.describe(days="Number of days (e.g., 50). Must be greater than 0.")
+    @app_commands.describe(days="Number of days (e.g., 90). Must be greater than 0.")
     async def set_inactive_threshold(
         self,
         interaction: GuildInteraction,
@@ -882,11 +863,11 @@ class Config(
             ephemeral=True,
         )
 
-    @prune.command(
+    @prune.command(  # ty: ignore[invalid-argument-type]
         name="set-days",
         description="Set the number of days of inactivity before pruning roles.",
     )
-    @app_commands.describe(days="Number of days (e.g., 14). Must be greater than 0.")
+    @app_commands.describe(days="Number of days (e.g., 30). Must be greater than 0.")
     async def set_prune_days(
         self,
         interaction: GuildInteraction,
@@ -906,7 +887,7 @@ class Config(
             ephemeral=True,
         )
 
-    @prune.command(
+    @prune.command(  # ty: ignore[invalid-argument-type]
         name="add-role",
         description="Add a (cosmetic) role to be pruned from inactive members.",
     )
@@ -920,8 +901,7 @@ class Config(
         if not interaction.guild_id:
             return
         if role is not None:
-            ensure_role_safety(role)
-            ensure_bot_hierarchy(interaction, role)
+            check_cosmetic_role_manageable(interaction.guild, role).raise_if_not_ok()
         await self._manage_role_list(
             interaction,
             role,
@@ -931,7 +911,7 @@ class Config(
             add_msg=f"✅ The role {role.mention} will now be pruned from inactive members." if role else None,
         )
 
-    @prune.command(name="remove-role", description="Remove a role from the prune list.")
+    @prune.command(name="remove-role", description="Remove a role from the prune list.")  # ty: ignore[invalid-argument-type]
     @app_commands.describe(role="Role to remove. Omit to pick from a list.")
     async def remove_prune_role(
         self,
@@ -956,7 +936,7 @@ class Config(
         description="Configure roles users can ping for games and events.",
     )
 
-    @event_roles.command(name="add", description="Allow users to ping a role for events or games.")
+    @event_roles.command(name="add", description="Allow users to ping a role for events or games.")  # ty: ignore[invalid-argument-type]
     @app_commands.describe(role="Role to add. Omit to pick from a list.")
     async def add_event_role(
         self,
@@ -967,11 +947,10 @@ class Config(
         if not interaction.guild_id:
             return
         if role is not None:
-            ensure_role_safety(role)
-            ensure_bot_hierarchy(interaction, role)
+            check_cosmetic_role_manageable(interaction.guild, role).raise_if_not_ok()
         await self._manage_role_list(interaction, role, "event_ping_roles", "event ping", action="add")
 
-    @event_roles.command(name="remove", description="Remove a role from the pingable list.")
+    @event_roles.command(name="remove", description="Remove a role from the pingable list.")  # ty: ignore[invalid-argument-type]
     @app_commands.describe(role="Role to remove. Omit to pick from a list.")
     async def remove_event_role(
         self,

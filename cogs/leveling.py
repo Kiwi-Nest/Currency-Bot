@@ -8,13 +8,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modules.dtypes import GuildId, GuildInteraction, NonNegativeInt, PositiveInt, UserGuildPair, UserId
-from modules.enums import StatName
+from modules.dtypes import GuildId, GuildInteraction, Member, NonNegativeInt, PositiveInt, UserId
+from modules.enums import PlainStat, StatName
 
 # Import the refactored logic and helpers
 from modules.guild_cog import GuildOnlyHybridCog
 from modules.leveling_utils import LevelBotProtocol, get_level, to_next_level
-from modules.security_utils import SecurityCheckError, ensure_bot_hierarchy, ensure_role_safety
+from modules.security_utils import check_bot_hierarchy, check_cosmetic_role_manageable
 
 if TYPE_CHECKING:
     from modules.BotCore import BotCore
@@ -48,52 +48,11 @@ class LevelingCog(GuildOnlyHybridCog):
         self.bot = bot
         self.user_db = user_db
         self.config_db = config_db
-        self.last_activity_timestamps: dict[UserGuildPair, float] = {}
+        self.last_activity_timestamps: dict[Member, float] = {}
         self.udp_transport: asyncio.DatagramTransport | None = None
         self.host = host
         self.udp_port = udp_port
         self.privileged_guild_id = privileged_guild_id  # For UDP special case
-
-    async def on_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        """Handle errors for all commands in this Cog."""
-        # Unwrap CommandInvokeError if present
-        original_error = error.original if isinstance(error, app_commands.CommandInvokeError) else error
-
-        if isinstance(original_error, SecurityCheckError):
-            await interaction.response.send_message(
-                "⚠️ This command is misconfigured due to a security risk. Please contact an admin.",
-                ephemeral=True,
-            )
-            # Log this for the admin, as it's a critical misconfiguration
-            # Determine the appropriate warning type based on the command
-            command_name = interaction.command.name if interaction.command else "unknown"
-
-            self.bot.dispatch(
-                "security_alert",
-                guild_id=interaction.guild.id,
-                risk_level="HIGH",
-                details=f"**Level Command Blocked**\nThe `/level {command_name}` command was blocked: {original_error}",
-                warning_type="role_hierarchy_error",
-            )
-        elif isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                f"❌ You do not have the required permissions: {', '.join(error.missing_permissions)}",
-                ephemeral=True,
-            )
-        elif isinstance(error, app_commands.AppCommandError):
-            # Generic AppCommandError (e.g., from transformers or validators)
-            await interaction.response.send_message(str(error), ephemeral=True)
-        else:
-            log.exception("Unhandled error in Leveling cog: %s", error)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "❌ An unexpected error occurred.",
-                    ephemeral=True,
-                )
 
     async def cog_load(self) -> None:
         """Start the UDP server when the cog is loaded."""
@@ -119,7 +78,7 @@ class LevelingCog(GuildOnlyHybridCog):
     def _get_addable_xp(self, user_id: UserId, guild_id: GuildId) -> NonNegativeInt:
         """Determine if a user is eligible for XP based on cooldowns."""
         now = time.time()
-        user_key = (user_id, guild_id)
+        user_key = Member(user_id, guild_id)
         seconds_since_last = now - self.last_activity_timestamps.get(user_key, 0)
 
         if seconds_since_last > COOLDOWN_SECONDS:
@@ -198,7 +157,7 @@ class LevelingCog(GuildOnlyHybridCog):
             return
 
         # Single atomic call to the enhanced database method
-        new_xp = await self.user_db.increment_stat(UserId(user_id), GuildId(guild_id), StatName.XP, amount)
+        new_xp = await self.user_db.increment_stat(Member(UserId(user_id), GuildId(guild_id)), PlainStat.XP, amount)
 
         # Safely derive the old XP from the result
         old_xp = NonNegativeInt(new_xp - amount)
@@ -245,7 +204,28 @@ class LevelingCog(GuildOnlyHybridCog):
         if xp_to_add > 0:
             await self._grant_xp(UserId(user_id), self.privileged_guild_id, "udp", PositiveInt(xp_to_add))
 
-    @level.command(
+    def _check_level_role(
+        self,
+        interaction: GuildInteraction,
+        role: discord.Role,
+        *,
+        check_safety: bool = True,
+    ) -> None:
+        check = check_cosmetic_role_manageable if check_safety else check_bot_hierarchy
+        result = check(interaction.guild, role)
+        if not result.ok:
+            self.bot.dispatch(
+                "security_alert",
+                guild_id=interaction.guild.id,
+                risk_level="HIGH",
+                details=(
+                    f"**Level Command Blocked**\nThe `/level {interaction.command.name}` command was blocked: {result.reason}"
+                ),
+                warning_type="role_hierarchy_error",
+            )
+            result.raise_if_not_ok()
+
+    @level.command(  # ty: ignore[invalid-argument-type]
         name="opt-out",
         description="Exclude yourself from the leveling system by getting the opt-out role.",
     )
@@ -277,10 +257,7 @@ class LevelingCog(GuildOnlyHybridCog):
             )
             return
 
-        # Run our centralized security checks (raises SecurityCheckError on failure)
-        # This role MUST have no permissions
-        ensure_role_safety(role)
-        ensure_bot_hierarchy(interaction, role)
+        self._check_level_role(interaction, role, check_safety=True)
 
         if role in interaction.user.roles:
             await interaction.response.send_message("ℹ️ You already have the XP Opt-Out role.", ephemeral=True)  # noqa: RUF001
@@ -293,13 +270,13 @@ class LevelingCog(GuildOnlyHybridCog):
                 ephemeral=True,
             )
         except discord.Forbidden:
-            # This is now a fallback, as validate_bot_hierarchy should catch most issues
+            # This is a fallback, as validate_bot_hierarchy should catch most issues
             await interaction.response.send_message(
                 "⚠️ I do not have permission to assign that role. Please contact an admin.",
                 ephemeral=True,
             )
 
-    @level.command(
+    @level.command(  # ty: ignore[invalid-argument-type]
         name="opt-in",
         description="Re-include yourself in the leveling system by removing the opt-out role.",
     )
@@ -320,9 +297,7 @@ class LevelingCog(GuildOnlyHybridCog):
             )
             return
 
-        # We only need to check hierarchy here, as we are removing the role.
-        # The permissions don't matter for removal, but hierarchy does.
-        ensure_bot_hierarchy(interaction, role)
+        self._check_level_role(interaction, role, check_safety=False)
 
         if role not in interaction.user.roles:
             await interaction.response.send_message("ℹ️ You are already opted in.", ephemeral=True)  # noqa: RUF001
@@ -340,7 +315,7 @@ class LevelingCog(GuildOnlyHybridCog):
                 ephemeral=True,
             )
 
-    @level.command(name="rank", description="Check your or another user's rank.")
+    @level.command(name="rank", description="Check your or another user's rank.")  # ty: ignore[invalid-argument-type]
     async def level_rank(self, interaction: GuildInteraction, member: discord.Member | None = None) -> None:
         """Display the level, XP, and rank of a user, with a progress bar."""
         target_user = member or interaction.user
@@ -351,7 +326,7 @@ class LevelingCog(GuildOnlyHybridCog):
             await interaction.response.send_message("Nice try but us bots don't do that.", ephemeral=True)
             return
 
-        xp = await self.user_db.get_stat(UserId(target_user.id), guild_id, StatName.XP)
+        xp = await self.user_db.get_stat(Member(UserId(target_user.id), guild_id), StatName.XP)
         level = get_level(xp)
         xp_for_next = to_next_level(xp)
 
@@ -380,7 +355,7 @@ class LevelingCog(GuildOnlyHybridCog):
         embed.set_footer(text=f"You need {xp_for_next:,} more XP for the next level.")
         await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
-    @level.command(name="reset-xp", description="[Admin] Resets a user's XP.")
+    @level.command(name="reset-xp", description="[Admin] Resets a user's XP.")  # ty: ignore[invalid-argument-type]
     @app_commands.checks.has_permissions(manage_guild=True)
     async def level_reset_xp(self, interaction: GuildInteraction, member: discord.Member) -> None:
         # This command is simple and can be defined locally.
@@ -389,11 +364,11 @@ class LevelingCog(GuildOnlyHybridCog):
         async def confirm_callback(interaction: GuildInteraction) -> None:
             user_id, guild_id = UserId(member.id), GuildId(interaction.guild.id)
             # First, get the user's current XP
-            current_xp = await self.user_db.get_stat(user_id, guild_id, StatName.XP)
+            m = Member(user_id, guild_id)
+            current_xp = await self.user_db.get_stat(m, StatName.XP)
 
             if current_xp > 0:
-                # If they have XP, reset it and confirm
-                await self.user_db.set_stat(user_id, guild_id, StatName.XP, 0)
+                await self.user_db.set_stat(m, PlainStat.XP, 0)
                 await interaction.response.edit_message(
                     content=f"✅ Successfully reset all XP for **{member.display_name}**.",
                     view=None,

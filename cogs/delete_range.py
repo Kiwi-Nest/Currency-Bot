@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import discord
 from discord import app_commands
@@ -24,6 +23,7 @@ class RangeCount:
     count: int
     is_approximate: bool
     error_reason: str | None = None
+    sampled_messages: list[discord.Message] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -49,7 +49,7 @@ def _parse_message_id(value: str) -> MessageId | None:
         if len(parts) >= 1 and parts[-1].isdigit():
             msg_id = int(parts[-1])
 
-    if msg_id is not None and 1e17 <= msg_id < 1e19:
+    if msg_id is not None and 10**17 <= msg_id < 10**19:
         return MessageId(msg_id)
     return None
 
@@ -97,7 +97,7 @@ async def count_range(
             limit=100,
         )
     ]
-    return RangeCount(len(msgs), is_approximate=True, error_reason=result.error.reason)
+    return RangeCount(len(msgs), is_approximate=True, error_reason=result.error.reason, sampled_messages=msgs)
 
 
 def _phase2_embed(
@@ -131,12 +131,12 @@ def _phase2_embed(
             inline=False,
         )
 
-    all_msgs = [msg_a, msg_b]
-    authors = {}
-    for m in all_msgs:
-        authors[m.author] = authors.get(m.author, 0) + 1
-    author_str = ", ".join(f"{a} ({c})" for a, c in sorted(authors.items(), key=lambda x: -x[1])[:3])
-    embed.add_field(name="Authors", value=author_str, inline=False)
+    sampled = range_count.sampled_messages or [msg_a, msg_b]
+    counter = Counter(m.author for m in sampled)
+    top5 = counter.most_common(5)
+    author_str = ", ".join(f"{a} ({c})" for a, c in top5)
+    author_approximate = range_count.is_approximate or sum(counter.values()) < range_count.count
+    embed.add_field(name="Authors (sampled)" if author_approximate else "Authors", value=author_str, inline=False)
 
     if range_count.count > 1000:
         embed.add_field(
@@ -170,7 +170,7 @@ def _done_embed(deleted: int, cancelled: bool, user: discord.User | None = None)
 class InvokerOnlyView(discord.ui.View):
     """Base view that restricts interaction to the invoker and staff."""
 
-    def __init__(self, invoker: discord.User, **kwargs) -> None:
+    def __init__(self, invoker: discord.User, **kwargs: Any) -> None:  # noqa: ANN401
         super().__init__(**kwargs)
         self.invoker = invoker
 
@@ -233,6 +233,7 @@ class ConfirmRangeView(InvokerOnlyView):
         state = DeletionState()
         inflight_view = InFlightView(state, interaction.user)
 
+        self.stop()
         await interaction.response.edit_message(
             embed=_inflight_embed(state),
             view=inflight_view,
@@ -244,7 +245,7 @@ class ConfirmRangeView(InvokerOnlyView):
             if modlog_channel and isinstance(modlog_channel, discord.TextChannel):
                 with contextlib.suppress(discord.HTTPException):
                     await modlog_channel.send(
-                        content=f"Deletion started by {interaction.user.mention}",
+                        content=f"Deletion started by {interaction.user.mention} in {interaction.channel.mention}",
                         embed=_phase2_embed(self.msg_a, self.msg_b, self.range_count),
                     )
 
@@ -442,7 +443,7 @@ class DeleteRangeCog(commands.Cog):
 
     def __init__(self, bot: BotCore) -> None:
         self.bot = bot
-        self._deletion_tasks: set = set()
+        self._deletion_tasks: set[asyncio.Task[None]] = set()
         self._menu = app_commands.ContextMenu(
             name="Delete Range",
             callback=self.delete_range_menu,

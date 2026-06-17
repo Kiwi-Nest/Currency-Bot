@@ -10,7 +10,7 @@ from discord.ext import commands
 
 from modules.clean_string import sanitize_chat
 from modules.dtypes import AnalysisStatus, MessageId, is_guild_message
-from modules.security_utils import check_bot_hierarchy, check_verifiable_role
+from modules.security_utils import check_verified_role_manageable
 
 if TYPE_CHECKING:
     from modules.BotCore import BotCore
@@ -148,30 +148,16 @@ class ReactionRoles(commands.Cog):
                 )
                 continue
 
-            # 4. Security Check: Use centralized boolean function
-            safe_result = check_verifiable_role(role)
-            if not safe_result.ok:
+            # 4 & 5. Safety + hierarchy checks
+            role_result = check_verified_role_manageable(message.guild, role)
+            if not role_result.ok:
                 results.append(
                     {
                         "status": "ERROR",
                         "line_content": clean_line,
                         "emoji_str": emoji_str,
                         "role": role,
-                        "error_message": safe_result.reason,  # Use the message from our util
-                    },
-                )
-                continue
-
-            # 5. Bot Hierarchy Check: Use centralized boolean function
-            hierarchy_result = check_bot_hierarchy(message.guild, role)
-            if not hierarchy_result.ok:
-                results.append(
-                    {
-                        "status": "ERROR",
-                        "line_content": clean_line,
-                        "emoji_str": emoji_str,
-                        "role": role,
-                        "error_message": hierarchy_result.reason,  # Use the message from our util
+                        "error_message": role_result.reason,
                     },
                 )
                 continue
@@ -299,34 +285,14 @@ class ReactionRoles(commands.Cog):
         role: discord.Role,
     ) -> bool:
         """Perform security checks before assigning a role."""
-        # 1. Stale Cache Security Check (Permissions)
-        safe_result = check_verifiable_role(role)
-        if not safe_result.ok:
+        # Stale cache security check (permissions + hierarchy)
+        result = check_verified_role_manageable(guild, role)
+        if not result.ok:
+            is_hierarchy = result.source == "hierarchy"
             log.warning(
-                "Role '%s' failed stale cache security check (permissions no longer safe). User: '%s', Guild: '%s'",
+                "Role '%s' failed stale cache security check (%s). User: '%s', Guild: '%s'",
                 role.name,
-                member.display_name,
-                guild.name,
-            )
-            self.bot.dispatch(
-                "security_alert",
-                guild_id=guild.id,
-                risk_level="HIGH",
-                details=(
-                    f"**Reaction Role Blocked**\n"
-                    f"I blocked the assignment of {role.mention} to {member.mention} because the role is no longer safe.\n"
-                    f"**Reason:** {safe_result.reason}"
-                ),
-                warning_type="reaction_role_unsafe",
-            )
-            return False
-
-        # 2. Stale Cache Security Check (Hierarchy)
-        hierarchy_result = check_bot_hierarchy(guild, role)
-        if not hierarchy_result.ok:
-            log.warning(
-                "Role '%s' failed stale cache security check (hierarchy no longer sufficient). User: '%s', Guild: '%s'",
-                role.name,
+                "hierarchy no longer sufficient" if is_hierarchy else "permissions no longer safe",
                 member.display_name,
                 guild.name,
             )
@@ -339,8 +305,14 @@ class ReactionRoles(commands.Cog):
                     f"I could not assign/remove the reaction role {role.mention} "
                     f"for {member.mention} because my bot role is no longer higher than it. "
                     "Please move my role up in the server settings."
+                )
+                if is_hierarchy
+                else (
+                    f"**Reaction Role Blocked**\n"
+                    f"I blocked the assignment of {role.mention} to {member.mention} because the role is no longer safe.\n"
+                    f"**Reason:** {result.reason}"
                 ),
-                warning_type="reaction_role_hierarchy",
+                warning_type="reaction_role_hierarchy" if is_hierarchy else "reaction_role_unsafe",
             )
             return False
 
@@ -356,22 +328,23 @@ class ReactionRoles(commands.Cog):
         """Add or remove the target role from the member."""
         try:
             reason = f"Reaction Role {message_id}"
-            if event_type == "REACTION_ADD":
-                await member.add_roles(role, reason=reason)
-                log.info(
-                    "Added role '%s' to '%s' in guild '%s'",
-                    role.name,
-                    member.display_name,
-                    member.guild.name,
-                )
-            elif event_type == "REACTION_REMOVE":
-                await member.remove_roles(role, reason=reason)
-                log.info(
-                    "Removed role '%s' from '%s' in guild '%s'",
-                    role.name,
-                    member.display_name,
-                    member.guild.name,
-                )
+            match event_type:
+                case "REACTION_ADD":
+                    await member.add_roles(role, reason=reason)
+                    log.info(
+                        "Added role '%s' to '%s' in guild '%s'",
+                        role.name,
+                        member.display_name,
+                        member.guild.name,
+                    )
+                case "REACTION_REMOVE":
+                    await member.remove_roles(role, reason=reason)
+                    log.info(
+                        "Removed role '%s' from '%s' in guild '%s'",
+                        role.name,
+                        member.display_name,
+                        member.guild.name,
+                    )
         except discord.Forbidden:
             log.warning(
                 "Failed to modify role '%s' for '%s'. Check permissions and role hierarchy.",

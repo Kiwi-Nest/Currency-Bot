@@ -4,7 +4,7 @@ import logging
 try:
     from landlock import Ruleset
 except ImportError:
-    logging.warning("Skipping sandboxing.")
+    logging.warning("Skipping sandboxing.")  # noqa: LOG015
 else:
     rs = Ruleset()
     rs.allow(".")
@@ -13,7 +13,7 @@ else:
     rs.allow("/usr/share/zoneinfo/")
     rs.allow("/proc/self")
     rs.apply()
-    logging.info("Succeeded sandboxing.")
+    logging.info("Succeeded sandboxing.")  # noqa: LOG015
 
 import discord
 from dotenv import load_dotenv
@@ -23,6 +23,18 @@ from modules.config import BotConfig
 
 # Loads environment variables
 load_dotenv()
+
+# Temporary: owner bypasses all local app-command permission checks
+_original_check_can_run = discord.app_commands.Command._check_can_run
+
+
+async def _owner_bypass(self, interaction: discord.Interaction) -> bool:  # noqa: ANN001
+    if await interaction.client.is_owner(interaction.user):
+        return True
+    return await _original_check_can_run(self, interaction)
+
+
+discord.app_commands.Command._check_can_run = _owner_bypass
 
 
 # 1. Create and configure your file handler separately.
@@ -47,7 +59,7 @@ try:
     config = BotConfig.from_environment()
 
     # Pass the config object into the bot's constructor
-    bot: BotCore = BotCore(config=config)
+    bot = BotCore(config=config)
 
     bot.run(config.token)
 

@@ -1,7 +1,6 @@
 import asyncio
 import datetime
 import logging
-import time
 from typing import TYPE_CHECKING
 
 import discord
@@ -14,6 +13,13 @@ if TYPE_CHECKING:
     from modules.ConfigDB import ConfigDB
 
 log = logging.getLogger(__name__)
+
+_ALERT_COLORS: dict[str, discord.Color] = {
+    "LOW": discord.Color.blue(),
+    "MEDIUM": discord.Color.orange(),
+    "HIGH": discord.Color.red(),
+    "CRITICAL": discord.Color.dark_red(),
+}
 
 
 class ModLogCog(commands.Cog):
@@ -325,7 +331,7 @@ class ModLogCog(commands.Cog):
         """
         # 1. Check Cooldown (if warning_type is provided)
         if warning_type:
-            now = time.time()
+            now = datetime.datetime.now(datetime.UTC).timestamp()
             cooldown_key = f"{guild_id}:{warning_type}"
             last_alert_time = self._alert_cooldowns.get(cooldown_key)
 
@@ -349,17 +355,10 @@ class ModLogCog(commands.Cog):
             return
 
         # 4. Format the Alert Embed
-        colors = {
-            "LOW": discord.Color.blue(),
-            "MEDIUM": discord.Color.orange(),
-            "HIGH": discord.Color.red(),
-            "CRITICAL": discord.Color.dark_red(),
-        }
-
         embed = discord.Embed(
             title=f"🚨 Security Alert: {risk_level.upper()}",
             description=details,
-            color=colors.get(risk_level.upper(), discord.Color.red()),
+            color=_ALERT_COLORS.get(risk_level.upper(), discord.Color.red()),
             timestamp=discord.utils.utcnow(),
         )
 

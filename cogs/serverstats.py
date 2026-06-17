@@ -46,7 +46,7 @@ class ServerStats(GuildOnlyHybridCog):
 
         # 3. Update Member Count Channel
         if member_channel and isinstance(member_channel, discord.VoiceChannel):
-            member_count = len([m for m in guild.members if not m.bot])
+            member_count = sum(1 for m in guild.members if not m.bot)
             new_name = f"All members: {member_count}"
             if member_channel.name != new_name:
                 try:
@@ -77,14 +77,12 @@ class ServerStats(GuildOnlyHybridCog):
                     log.exception("Failed to update member count for guild %s", guild.name)
 
         # 4. Update Tag Server Count Channel (members with primary guild tag)
-        if isinstance(tag_channel, discord.VoiceChannel) and tag_channel:
+        if isinstance(tag_channel, discord.VoiceChannel):
             # Count members who have this guild set as their primary guild with a tag
-            tag_members_count = len(
-                [
-                    m
-                    for m in guild.members
-                    if not m.bot and m.primary_guild and m.primary_guild.id == guild.id and m.primary_guild.tag
-                ],
+            tag_members_count = sum(
+                1
+                for m in guild.members
+                if not m.bot and m.primary_guild and m.primary_guild.id == guild.id and m.primary_guild.tag
             )
             new_name = f"Tag Users: {tag_members_count}"
             if tag_channel.name != new_name:

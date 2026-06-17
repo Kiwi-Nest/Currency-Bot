@@ -13,9 +13,16 @@ RoleId = NewType("RoleId", int)
 MessageId = NewType("MessageId", int)
 type RoleIdList = list[RoleId]
 
+DISCORD_EPOCH_MS: int = 1_420_070_400_000
+
+
 # Semantic Type Aliases
 # For complex types that appear in multiple places.
-type UserGuildPair = tuple[UserId, GuildId]
+@dataclass(frozen=True, slots=True)
+class Member:
+    user_id: UserId
+    guild_id: GuildId
+
 
 # Literals for Closed Sets of Values
 # Enforces that a variable must be one of these specific string values.
@@ -87,9 +94,10 @@ class UserGuildRow:
     xp: int
     bumps: int
     level: int
-    last_active_timestamp: str
+    last_active_timestamp: int
     native_language: str | None
     timezone: str
+    daily_reminder_preference: ReminderPreference
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,8 +114,23 @@ class UserReminder:
     """User's reminder record."""
 
     message: str
-    remind_at: str
-    created_at: str
+    remind_at: int
+    created_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class UserLedgerRow:
+    """A single currency ledger entry involving the user."""
+
+    guild_id: GuildId
+    timestamp: int
+    event_type: str
+    event_reason: str
+    sender_id: int
+    receiver_id: int
+    amount: int
+    initiator_id: int | None
+    reference_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,8 +139,30 @@ class UserPosition:
 
     ticker: str
     notional_dollars: int
+    collateral_dollars: int
     entry_price: float
-    timestamp: str
+    timestamp: int
+
+
+@dataclass(frozen=True, slots=True)
+class MemberEvent:
+    """A single member count event to be stored in the database."""
+
+    message_id: MessageId
+    guild_id: GuildId
+    channel_id: ChannelId
+    bot_id: UserId
+    delta: int
+    anchor_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcileResult:
+    """Summary of a reconcile pass."""
+
+    rows_updated: int
+    max_drift: int
+    current_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,4 +174,5 @@ class UserDataReport:
     invites: list[UserInvite]
     reminders: list[UserReminder]
     positions: list[UserPosition]
+    ledger: list[UserLedgerRow]
     voice: UserVoiceStats | None = None

@@ -286,15 +286,17 @@ class SecurityAudit(
 
     @app_commands.command(
         name="hidden_channels",
-        description="List all channels hidden from @everyone.",
+        description="List all channels hidden from the member role (or @everyone).",
     )
     async def hidden_channels(self, interaction: discord.Interaction) -> None:
-        """List channels hidden from @everyone."""
+        """List channels hidden from the member role (or @everyone)."""
         ctx = await self.bot.get_context(interaction, cls=commands.Context)
         if not ctx.guild:
             return
 
-        results = audit_utils.check_hidden_channels(ctx.guild)
+        config = await self.config_db.get_guild_config(ctx.guild.id)
+        member_role = ctx.guild.get_role(config.verified_role_id) if config.verified_role_id else None
+        results = audit_utils.check_hidden_channels(ctx.guild, member_role)
         await self._send_audit_embed(
             ctx,
             "Hidden Channels",
@@ -378,7 +380,10 @@ class SecurityAudit(
             audit_utils.check_bot_permissions(ctx.guild),
             audit_utils.check_risky_overwrites(ctx.guild, config),
             audit_utils.check_desynced_channels(ctx.guild),
-            audit_utils.check_hidden_channels(ctx.guild),
+            audit_utils.check_hidden_channels(
+                ctx.guild,
+                ctx.guild.get_role(config.verified_role_id) if config.verified_role_id else None,
+            ),
             audit_utils.check_unused_roles(ctx.guild),
             audit_utils.check_server_config(ctx.guild),
         ]
@@ -395,6 +400,20 @@ class SecurityAudit(
         self._add_issues_to_report(report, *async_results)
 
         return report
+
+    @app_commands.command(
+        name="invites",
+        description="Audit active invites for infinite-use or infinite-duration links.",
+    )
+    async def audit_invites(self, interaction: discord.Interaction) -> None:
+        """Audit active invites for security issues."""
+        ctx = await self.bot.get_context(interaction, cls=commands.Context)
+        if not ctx.guild:
+            return
+
+        await ctx.defer(ephemeral=True)
+        results = await audit_utils.check_invites(ctx.guild)
+        await self._send_audit_embed(ctx, "Invite Audit", results, color=discord.Colour.orange())
 
     @app_commands.command(
         name="full",

@@ -2,14 +2,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Final, NewType
+from typing import Final, Literal, NewType
 
 import discord
 from discord.permissions import Permissions
-
-# A context that has an actor (a user/member) and a guild.
-# Used for functions that can be triggered by either a message or interaction.
-type ActorContext = discord.Interaction | discord.Message
 
 WebhookID = NewType("WebhookID", int)
 RuleID = NewType("RuleID", int)
@@ -19,14 +15,13 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ValidationResult:
-    """Holds the result of a boolean security check.
-
-    This is preferable to returning tuples, as it's more explicit
-    and avoids complex Union return types.
-    """
-
     ok: bool
     reason: str | None = None
+    source: Literal["safety", "hierarchy"] | None = None
+
+    def raise_if_not_ok(self) -> None:
+        if not self.ok:
+            raise SecurityCheckError(self.reason)
 
 
 # A permissions object representing all perms allowed for a "verified" role.
@@ -35,6 +30,7 @@ class ValidationResult:
 VERIFIED_ROLE_PERMISSIONS: Final[Permissions] = Permissions(
     view_channel=True,
     view_audit_log=True,
+    view_guild_insights=True,
     create_instant_invite=True,
     change_nickname=True,
     send_messages=True,
@@ -71,9 +67,8 @@ class SecurityCheckError(Exception):
 
 
 # Check Functions (Return ValidationResult)
-# These hold the actual validation logic and return a result object.
-# Use these in background/automated contexts where you need to handle
-# failures gracefully (e.g., loops, event handlers).
+# Call .raise_if_not_ok() to raise SecurityCheckError on failure (command handlers),
+# or branch on .ok / .source for custom handling (background tasks, alerts).
 
 
 def check_role_safety(role: discord.Role) -> ValidationResult:
@@ -88,13 +83,14 @@ def check_role_safety(role: discord.Role) -> ValidationResult:
     """
     # 1. Always reject @everyone
     if role.is_default():
-        return ValidationResult(False, "The @everyone role cannot be used for this feature.")
+        return ValidationResult(False, "The @everyone role cannot be used for this feature.", source="safety")
 
     # 2. Check for roles that must be purely cosmetic
     if role.permissions != discord.Permissions.none():
         return ValidationResult(
             False,
             f"Role {role.mention} must have **no permissions** to be used for this feature.",
+            source="safety",
         )
 
     return ValidationResult(True)
@@ -113,7 +109,7 @@ def check_verifiable_role(role: discord.Role) -> ValidationResult:
     """
     # 1. Always reject @everyone
     if role.is_default():
-        return ValidationResult(False, "The @everyone role cannot be used for this feature.")
+        return ValidationResult(False, "The @everyone role cannot be used for this feature.", source="safety")
 
     # 2. Check if all permissions are within the allowed set
     # (role.permissions | VERIFIED_ROLE_PERMISSIONS) is the union of perms
@@ -135,11 +131,13 @@ def check_verifiable_role(role: discord.Role) -> ValidationResult:
                 f"Role {role.mention} has unknown disallowed permissions "
                 f"(raw bitfield value: {disallowed_perms.value}). "
                 "This usually indicates a new Discord permission not yet supported by your library version.",
+                source="safety",
             )
 
         return ValidationResult(
             False,
             f"Role {role.mention} has permissions that are not allowed for a verified role: {', '.join(found_perms)}",
+            source="safety",
         )
 
     return ValidationResult(True)
@@ -161,6 +159,7 @@ def check_bot_hierarchy(
             f"I cannot manage the {role.mention} role. It is higher than "
             "(or equal to) my own top role. Please move my bot role "
             "higher in the server's role list.",
+            source="hierarchy",
         )
 
     return ValidationResult(True)
@@ -208,64 +207,20 @@ def check_moderation_action(
     return ValidationResult(True)
 
 
-# Ensure Functions (Raise Exceptions)
-# These are thin wrappers that call check_* and raise SecurityCheckError if not OK.
-# Use these in interactive command contexts where you want to abort on failure.
+# Combined checks - run safety then hierarchy in sequence, returning the first failure.
+# These encode the invariant that both must pass before a role can be managed.
 
 
-def ensure_role_safety(role: discord.Role) -> None:
-    """Ensure a role is safe (i.e., has **no permissions**).
-
-    Raises:
-        SecurityCheckError: If the role has any permissions or is @everyone.
-
-    """
+def check_cosmetic_role_manageable(guild: discord.Guild, role: discord.Role) -> ValidationResult:
+    """Check that a purely cosmetic role (zero permissions) can be managed by the bot."""
     result = check_role_safety(role)
-    if not result.ok:
-        raise SecurityCheckError(result.reason)
+    return result if not result.ok else check_bot_hierarchy(guild, role)
 
 
-def ensure_verifiable_role(role: discord.Role) -> None:
-    """Ensure a role is safe to be used as a "verified" role.
-
-    Raises:
-        SecurityCheckError: If the role is @everyone or has disallowed permissions.
-
-    """
+def check_verified_role_manageable(guild: discord.Guild, role: discord.Role) -> ValidationResult:
+    """Check that a verified/participation role can be managed by the bot."""
     result = check_verifiable_role(role)
-    if not result.ok:
-        raise SecurityCheckError(result.reason)
-
-
-def ensure_bot_hierarchy(context: ActorContext, role: discord.Role) -> None:
-    """Ensure the bot's role is high enough to manage the target role.
-
-    Raises:
-        SecurityCheckError: If not in a guild or if hierarchy is insufficient.
-
-    """
-    if not context.guild:
-        msg = "Role hierarchy can only be validated in a server."
-        raise SecurityCheckError(msg)
-
-    result = check_bot_hierarchy(context.guild, role)
-    if not result.ok:
-        raise SecurityCheckError(result.reason)
-
-
-def ensure_moderation_action(
-    interaction: discord.Interaction,
-    target_member: discord.Member,
-) -> None:
-    """Ensure all pre-action checks pass for a moderation command.
-
-    Raises:
-        SecurityCheckError: On any failure.
-
-    """
-    result = check_moderation_action(interaction, target_member)
-    if not result.ok:
-        raise SecurityCheckError(result.reason)
+    return result if not result.ok else check_bot_hierarchy(guild, role)
 
 
 # A dictionary of dangerous permissions and a brief reason why.

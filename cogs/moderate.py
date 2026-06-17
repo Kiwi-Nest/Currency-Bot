@@ -1,7 +1,5 @@
-import contextlib
 import datetime
 import logging
-import math
 from typing import TYPE_CHECKING, Final, Literal
 
 import discord
@@ -12,8 +10,8 @@ from modules.dtypes import GuildId, GuildInteraction
 from modules.guild_cog import GuildOnlyHybridCog
 from modules.security_utils import (
     SecurityCheckError,
-    ensure_bot_hierarchy,
-    ensure_moderation_action,
+    check_bot_hierarchy,
+    check_moderation_action,
 )
 
 if TYPE_CHECKING:
@@ -143,61 +141,13 @@ class Moderate(
 
         # Run the centralized validation logic (raises SecurityCheckError on failure)
         try:
-            ensure_moderation_action(interaction, member)
+            check_moderation_action(interaction, member).raise_if_not_ok()
         except SecurityCheckError as e:
             # Raise a CheckFailure, which our error handler will catch and report.
             raise app_commands.CheckFailure(str(e)) from e
 
         # All checks passed
         return True
-
-    async def on_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        """Handle errors for all commands in this Cog."""
-        ephemeral = True
-
-        # Unwrap CommandInvokeError if present
-        original_error = error.original if isinstance(error, app_commands.CommandInvokeError) else error
-
-        if isinstance(error, app_commands.CommandOnCooldown):
-            retry_after = math.ceil(error.retry_after)
-            await interaction.response.send_message(
-                f"⏳ You are on cooldown. Please try again in {retry_after} second(s).",
-                ephemeral=ephemeral,
-            )
-        elif isinstance(error, app_commands.CheckFailure):
-            # Catches hierarchy checks from interaction_check
-            await interaction.response.send_message(f"❌ {error}", ephemeral=ephemeral)
-        elif isinstance(original_error, SecurityCheckError):
-            # Catches SecurityCheckError from commands (e.g., mute role hierarchy)
-            await interaction.response.send_message(
-                f"❌ **Configuration Error:**\n{original_error}",
-                ephemeral=ephemeral,
-            )
-        elif isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                f"❌ You do not have the required permissions: {', '.join(error.missing_permissions)}",
-                ephemeral=ephemeral,
-            )
-        elif isinstance(error, app_commands.BotMissingPermissions):
-            await interaction.response.send_message(
-                f"❌ I do not have the required permissions: {', '.join(error.missing_permissions)}",
-                ephemeral=ephemeral,
-            )
-        elif isinstance(error, app_commands.AppCommandError):
-            # Generic AppCommandError (e.g., from transformers)
-            await interaction.response.send_message(str(error), ephemeral=ephemeral)
-        else:
-            log.exception("Unhandled error in Moderate cog: %s", error)
-            if not interaction.response.is_done():
-                with contextlib.suppress(discord.HTTPException):
-                    await interaction.response.send_message(
-                        "❌ An unexpected error occurred.",
-                        ephemeral=ephemeral,
-                    )
 
     async def _notify_member(
         self,
@@ -238,7 +188,7 @@ class Moderate(
 
     # MODERATION COMMANDS
 
-    @app_commands.command(name="ban", description="Bans a user from the server.")
+    @app_commands.command(name="ban", description="Bans a user from the server.")  # ty: ignore[invalid-argument-type]
     @app_commands.checks.has_permissions(ban_members=True)  # Still need specific perm
     async def ban(
         self,
@@ -260,7 +210,7 @@ class Moderate(
         elif delete_messages == "Last 7 days":
             delete_seconds = 604800
 
-        if notify_member and type(user) is discord.Member:
+        if notify_member and isinstance(user, discord.Member):
             await self._notify_member(interaction, user, "banned", reason)
 
         try:
@@ -282,7 +232,7 @@ class Moderate(
             )
             log.exception("Failed to ban %s", user)
 
-    @app_commands.command(name="kick", description="Kicks a member from the server.")
+    @app_commands.command(name="kick", description="Kicks a member from the server.")  # ty: ignore[invalid-argument-type]
     @app_commands.checks.has_permissions(kick_members=True)  # Still need specific perm
     async def kick(
         self,
@@ -315,7 +265,7 @@ class Moderate(
             )
             log.exception("Failed to kick %s", member)
 
-    @app_commands.command(
+    @app_commands.command(  # ty: ignore[invalid-argument-type]
         name="timeout",
         description="Times out a member for a specified duration.",
     )
@@ -368,7 +318,7 @@ class Moderate(
             )
             log.exception("Failed to timeout %s", member)
 
-    @app_commands.command(name="untimeout", description="Removes a timeout from a member.")
+    @app_commands.command(name="untimeout", description="Removes a timeout from a member.")  # ty: ignore[invalid-argument-type]
     async def untimeout(
         self,
         interaction: GuildInteraction,
@@ -412,7 +362,7 @@ class Moderate(
             )
             log.exception("Failed to untimeout %s", member)
 
-    @app_commands.command(
+    @app_commands.command(  # ty: ignore[invalid-argument-type]
         name="mute",
         description="Mutes a member by assigning the muted role.",
     )
@@ -457,7 +407,7 @@ class Moderate(
 
         # This check must be inside the command, as it depends on the configured role.
         # It will be caught by on_app_command_error if it fails.
-        ensure_bot_hierarchy(interaction, muted_role)
+        check_bot_hierarchy(interaction.guild, muted_role).raise_if_not_ok()
 
         if muted_role in member.roles:
             await interaction.response.send_message(
@@ -488,7 +438,7 @@ class Moderate(
             )
             log.exception("Failed to mute %s", member)
 
-    @app_commands.command(
+    @app_commands.command(  # ty: ignore[invalid-argument-type]
         name="unmute",
         description="Unmutes a member by removing the muted role.",
     )
@@ -522,7 +472,7 @@ class Moderate(
 
         # This check must be inside the command, as it depends on the configured role.
         # It will be caught by on_app_command_error if it fails.
-        ensure_bot_hierarchy(interaction, muted_role)
+        check_bot_hierarchy(interaction.guild, muted_role).raise_if_not_ok()
 
         if muted_role not in member.roles:
             await interaction.response.send_message(

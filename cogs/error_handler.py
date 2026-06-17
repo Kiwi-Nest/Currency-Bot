@@ -32,7 +32,7 @@ class ErrorHandler(commands.Cog):
         """Handle errors from prefix commands."""
         original_error = getattr(error, "original", error)
 
-        if isinstance(original_error, (UserError, app_errors.TransformerError)):
+        if isinstance(original_error, UserError | app_errors.TransformerError):
             await ctx.send(f"❌ {original_error}")
             return
 
@@ -49,7 +49,7 @@ class ErrorHandler(commands.Cog):
             await ctx.send("You may not use this command in DMs.")
             return
 
-        if isinstance(error, (commands.MissingPermissions, commands.BotMissingPermissions)):
+        if isinstance(error, commands.MissingPermissions | commands.BotMissingPermissions):
             await self._handle_permissions_error(ctx, error)
             return
 
@@ -65,11 +65,11 @@ class ErrorHandler(commands.Cog):
         if isinstance(error, app_errors.CommandInvokeError):
             error = error.original
 
-        if isinstance(error, (UserError, SecurityCheckError)):
+        if isinstance(error, UserError | SecurityCheckError):
             await self._send_interaction(interaction, f"❌ {error}")
             return
 
-        if isinstance(error, (app_errors.MissingPermissions, app_errors.BotMissingPermissions)):
+        if isinstance(error, app_errors.MissingPermissions | app_errors.BotMissingPermissions):
             await self._handle_permissions_error(interaction, error)
             return
 
@@ -97,9 +97,9 @@ class ErrorHandler(commands.Cog):
 
     async def _handle_permissions_error(self, source: ErrorContext, error: Exception) -> None:
         """Notify the user of missing permissions."""
-        if isinstance(error, (commands.MissingPermissions, app_errors.MissingPermissions)):
+        if isinstance(error, commands.MissingPermissions | app_errors.MissingPermissions):
             message = f"You are missing the following permissions: {self._format_permissions(error.missing_permissions)}"
-        elif isinstance(error, (commands.BotMissingPermissions, app_errors.BotMissingPermissions)):
+        elif isinstance(error, commands.BotMissingPermissions | app_errors.BotMissingPermissions):
             message = f"I am missing the following permissions: {self._format_permissions(error.missing_permissions)}"
         else:
             return

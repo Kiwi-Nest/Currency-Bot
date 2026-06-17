@@ -5,7 +5,7 @@ from discord import Forbidden, HTTPException
 from discord.ext import commands, tasks
 
 from modules.dtypes import GuildId
-from modules.security_utils import check_bot_hierarchy, check_role_safety
+from modules.security_utils import check_cosmetic_role_manageable
 
 if TYPE_CHECKING:
     import discord
@@ -30,27 +30,19 @@ class InactiveCog(commands.Cog):
 
     def _check_role(self, guild: discord.Guild, role: discord.Role) -> bool:
         """Run safety and hierarchy checks, dispatching alerts on failure. Returns True if safe."""
-        safety = check_role_safety(role)
-        if not safety.ok:
+        result = check_cosmetic_role_manageable(guild, role)
+        if not result.ok:
+            is_hierarchy = result.source == "hierarchy"
             self.bot.dispatch(
                 "security_alert",
                 guild_id=guild.id,
-                risk_level="MEDIUM",
+                risk_level="HIGH" if is_hierarchy else "MEDIUM",
                 details=(
-                    f"**Inactive Role Skipped**\nI skipped managing the inactive role {role.mention}. Reason: {safety.reason}"
+                    f"**{'Inactive Role Failed' if is_hierarchy else 'Inactive Role Skipped'}**\n"
+                    f"I {'cannot manage' if is_hierarchy else 'skipped managing'} the inactive role "
+                    f"{role.mention}. Reason: {result.reason}"
                 ),
-                warning_type="inactive_security",
-            )
-            return False
-
-        hierarchy = check_bot_hierarchy(guild, role)
-        if not hierarchy.ok:
-            self.bot.dispatch(
-                "security_alert",
-                guild_id=guild.id,
-                risk_level="HIGH",
-                details=f"**Inactive Role Failed**\nI cannot manage the inactive role {role.mention}. Reason: {hierarchy.reason}",
-                warning_type="inactive_permission",
+                warning_type="inactive_permission" if is_hierarchy else "inactive_security",
             )
             return False
 
@@ -118,14 +110,9 @@ class InactiveCog(commands.Cog):
         if not role or role not in member.roles:
             return
 
-        safety = check_role_safety(role)
-        if not safety.ok:
-            log.warning("Inactive role safety check failed on activity: %s", safety.reason)
-            return
-
-        hierarchy = check_bot_hierarchy(member.guild, role)
-        if not hierarchy.ok:
-            log.warning("Bot hierarchy check failed for inactive role on activity: %s", hierarchy.reason)
+        result = check_cosmetic_role_manageable(member.guild, role)
+        if not result.ok:
+            log.warning("Inactive role check failed on activity (%s): %s", result.source, result.reason)
             return
 
         try:
@@ -138,9 +125,4 @@ class InactiveCog(commands.Cog):
 
 
 async def setup(bot: BotCore) -> None:
-    user_db = getattr(bot, "user_db", None)
-    if not user_db:
-        msg = "Bot is missing the 'user_db' attribute."
-        raise RuntimeError(msg)
-
-    await bot.add_cog(InactiveCog(bot=bot, user_db=user_db))
+    await bot.add_cog(InactiveCog(bot=bot, user_db=bot.user_db))

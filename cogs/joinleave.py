@@ -1,11 +1,14 @@
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import discord
 from discord.ext import commands
 
+from modules.discord_search import fetch_author_stats
 from modules.dtypes import GuildId, InviterId, RoleId, UserId
-from modules.security_utils import check_bot_hierarchy, check_verifiable_role
+from modules.result import Err, Ok
+from modules.security_utils import check_verified_role_manageable
 from modules.utils import format_ordinal
 
 if TYPE_CHECKING:
@@ -63,7 +66,7 @@ class JoinLeaveLogCog(commands.Cog):
 
         try:
             # Defensively disable all pings. Only display mentions.
-            await log_channel.send(embed=embed, allowed_mentions=None)
+            await log_channel.send(embed=embed)
         except discord.Forbidden:
             log.warning("Permission denied sending join/leave log in guild %s", member.guild.id)
             self.bot.dispatch(
@@ -144,34 +147,26 @@ class JoinLeaveLogCog(commands.Cog):
         if user_indicators:
             role = member.guild.get_role(verified_role_id)
             if role:
-                # Check that the role only has permissions from the allowed list
-                verified_result = check_verifiable_role(role)
-                hierarchy_result = check_bot_hierarchy(member.guild, role)
-
-                if not verified_result.ok:
+                result = check_verified_role_manageable(member.guild, role)
+                if not result.ok:
+                    is_hierarchy = result.source == "hierarchy"
                     self.bot.dispatch(
                         "security_alert",
                         guild_id=member.guild.id,
                         risk_level="HIGH",
                         details=(
-                            f"**Auto-Verification Blocked**\n"
-                            f"**Blocked** auto-verification for {member.mention}. "
-                            f"The configured `verified_role_id` ({role.mention}) has disallowed permissions: "
-                            f"{verified_result.reason}"
+                            f"**{'Auto-Verification Failed' if is_hierarchy else 'Auto-Verification Blocked'}**\n"
+                            f"**{'Failed' if is_hierarchy else 'Blocked'}** auto-verification for {member.mention}. "
+                            + (
+                                f"I cannot assign the `verified_role_id` ({role.mention}): {result.reason}"
+                                if is_hierarchy
+                                else (
+                                    f"The configured `verified_role_id` ({role.mention})"
+                                    f" has disallowed permissions: {result.reason}"
+                                )
+                            )
                         ),
-                        warning_type="dangerous_role_assignment",
-                    )
-                elif not hierarchy_result.ok:
-                    self.bot.dispatch(
-                        "security_alert",
-                        guild_id=member.guild.id,
-                        risk_level="HIGH",
-                        details=(
-                            f"**Auto-Verification Failed**\n"
-                            f"**Failed** auto-verification for {member.mention}. "
-                            f"I cannot assign the `verified_role_id` ({role.mention}): {hierarchy_result.reason}"
-                        ),
-                        warning_type="role_hierarchy",
+                        warning_type="role_hierarchy" if is_hierarchy else "dangerous_role_assignment",
                     )
                 else:
                     # All checks passed, assign the role
@@ -204,12 +199,10 @@ class JoinLeaveLogCog(commands.Cog):
         # Build Description
         # Only filter by completed_onboarding if any members have completed it
         any_completed = any(m.flags.completed_onboarding for m in member.guild.members if not m.bot)
-        member_count = len(
-            [
-                m
-                for m in member.guild.members
-                if not m.bot and len(m.roles) > 1 and (not any_completed or m.flags.completed_onboarding)
-            ],
+        member_count = sum(
+            1
+            for m in member.guild.members
+            if not m.bot and len(m.roles) > 1 and (not any_completed or m.flags.completed_onboarding)
         )
 
         description = [
@@ -304,7 +297,6 @@ class JoinLeaveLogCog(commands.Cog):
 
         description.append(f"**Roles:** {roles_str}")
 
-        # Get Inviter from DB (New)
         if not member.bot:
             try:
                 inviter_id = await self.invites_db.get_inviter_by_invitee(
@@ -315,6 +307,14 @@ class JoinLeaveLogCog(commands.Cog):
                     description.append(f"**Invited by:** <@{inviter_id}>")
             except Exception:
                 log.exception("Failed to get inviter from DB for leave log")
+
+            stats = await fetch_author_stats(self.bot.http_session, GuildId(member.guild.id), UserId(member.id))
+            match stats:
+                case Ok((count, ts)):
+                    last = f" - last seen {discord.utils.format_dt(datetime.fromisoformat(ts), 'R')}" if ts else ""
+                    description.append(f"**Messages:** {count:,}{last}")
+                case Err(e):
+                    log.warning("Failed to fetch author stats for leave log: %s", e)
 
         await self._log_event(member, title, color, description)
 

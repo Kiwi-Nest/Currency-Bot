@@ -13,6 +13,7 @@ from modules.ConfigDB import ConfigDB
 from modules.CurrencyLedgerDB import CurrencyLedgerDB
 from modules.Database import Database
 from modules.InvitesDB import InvitesDB
+from modules.MemberCountDB import MemberCountDB
 from modules.PrivacyDB import PrivacyDB
 from modules.ReminderDB import ReminderDB
 from modules.server_admin import ServerManager
@@ -56,6 +57,7 @@ class BotCore(commands.Bot):
 
         # Initialize the database first
         self.database: Database = Database()
+        await self.database.connect()
         self.user_db = UserDB(self.database)
         self.task_db = TaskDB(self.database)
         self.invites_db = InvitesDB(self.database, self.http_session)
@@ -63,6 +65,7 @@ class BotCore(commands.Bot):
         self.config_db = ConfigDB(self.database)
         self.reminder_db = ReminderDB(self.database)
         self.voicechat_db = VoiceChatDB(self.database)
+        self.member_count_db = MemberCountDB(self.database)
         self.privacy_db = PrivacyDB(self.database, self.voicechat_db)
 
         # AWAIT the post-initialization tasks to ensure tables are created
@@ -74,6 +77,7 @@ class BotCore(commands.Bot):
         await self.config_db.post_init()
         await self.reminder_db.post_init()
         await self.voicechat_db.post_init()
+        await self.member_count_db.post_init()
 
         # Initialize TradingLogic if API key is present
         if self.config.twelvedata_api_key:
@@ -137,7 +141,7 @@ class BotCore(commands.Bot):
                 )
                 self.tzbot.set_flags(TZFlags.AES, TZFlags.MSGPACK)
         except ImportError:
-            self.tzbot: None = None
+            self.tzbot = None
 
         log.info("Setup complete.")
 
@@ -259,6 +263,7 @@ class BotCore(commands.Bot):
         if self.http_session:
             await self.http_session.close()
             log.info("Closed shared aiohttp session.")
+        await self.database.close()
         log.info("Closing bot gracefully.")
         await super().close()
 

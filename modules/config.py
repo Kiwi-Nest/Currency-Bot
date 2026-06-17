@@ -3,6 +3,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .dtypes import ChannelId, GuildId, UserId
 
@@ -29,6 +30,7 @@ class BotConfig:
     tzbot_port: int | None
     tzbot_api_key: str | None
     tzbot_encryption_key: str | None
+    daily_timezone: ZoneInfo
 
     @classmethod
     def from_environment(cls) -> Self:
@@ -61,6 +63,17 @@ class BotConfig:
 
             return Path(val)
 
+        def get_timezone(name: str) -> ZoneInfo:
+            """Get a timezone from environment, fallback to Pacific/Auckland."""
+            val = os.getenv(name)
+            if val:
+                try:
+                    return ZoneInfo(val)
+                except ZoneInfoNotFoundError:
+                    log.exception("'%s' is not a valid timezone. Falling back to Pacific/Auckland.", val)
+                    return ZoneInfo("Pacific/Auckland")
+            return ZoneInfo("Pacific/Auckland")
+
         token = os.getenv("TOKEN")
         if not token:
             msg = "Required environment variable 'TOKEN' is not set."
@@ -86,4 +99,5 @@ class BotConfig:
             tzbot_port=get_env_int("TZBOT_PORT", required=False),
             tzbot_api_key=os.getenv("TZBOT_API_KEY"),
             tzbot_encryption_key=os.getenv("TZBOT_ENCRYPTION_KEY"),
+            daily_timezone=get_timezone("DAILY_TIMEZONE"),
         )

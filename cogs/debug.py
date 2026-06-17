@@ -1,4 +1,5 @@
 import logging
+from operator import attrgetter
 from typing import TYPE_CHECKING
 
 import discord
@@ -33,7 +34,7 @@ class Roles(GuildOnlyHybridCog):
         roles_with_permissions = []
         roles_without_permissions = []
 
-        for role in sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True):
+        for role in sorted(ctx.guild.roles, key=attrgetter("position"), reverse=True):
             # Bot integrations and @everyone
             if role.managed:
                 continue

@@ -4,12 +4,11 @@ If a user deletes a recent reminder message, it will be removed from the databas
 """
 
 import asyncio
-import contextlib
 import logging
 import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 from dateparser.search import search_dates
@@ -17,15 +16,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from modules.clean_string import sanitize_chat
-from modules.dtypes import ChannelId, GuildId, MessageId, UserId
+from modules.dtypes import ChannelId, GuildId, Member, MessageId, UserId
 
 if TYPE_CHECKING:
     from modules.BotCore import BotCore
+    from modules.ConfigDB import ConfigDB
     from modules.ReminderDB import ReminderDB
     from modules.UserDB import UserDB
-
-    with contextlib.suppress(ImportError):
-        pass
 
 log = logging.getLogger(__name__)
 
@@ -73,10 +70,11 @@ class SnoozeView(discord.ui.View):
 
 
 class Reminders(commands.Cog):
-    def __init__(self, bot: BotCore, *, reminder_db: ReminderDB, user_db: UserDB) -> None:
+    def __init__(self, bot: BotCore, *, reminder_db: ReminderDB, user_db: UserDB, config_db: ConfigDB) -> None:
         self.bot = bot
         self.reminder_db = reminder_db
         self.user_db = user_db
+        self.config_db = config_db
         self._timer_task: asyncio.Task | None = None
         self._next_reminder_msg_id: int | None = None
 
@@ -106,10 +104,10 @@ class Reminders(commands.Cog):
                 self._next_reminder_msg_id = None
             return
 
-        message_id, _, _, _, _, remind_at_str = reminder
+        message_id, _, _, _, _, remind_at_epoch = reminder
 
-        # Parse DB string back to UTC datetime
-        remind_at = datetime.strptime(remind_at_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        # remind_at is stored as INTEGER epoch
+        remind_at = datetime.fromtimestamp(int(remind_at_epoch), UTC)
 
         # If we are already waiting for this specific reminder, do nothing.
         if self._timer_task and not self._timer_task.done() and self._next_reminder_msg_id == message_id:
@@ -265,29 +263,33 @@ class Reminders(commands.Cog):
 
         return dt, clean_text
 
-    # Helper: Get timezone either from TZBot or local database
     async def _get_timezone(self, user_id: UserId, guild_id: GuildId) -> ZoneInfo:
-        tz: ZoneInfo | None = None
         if self.bot.tzbot:
             from tzbot4py import TimezoneFromUserIDData, TZRequest  # noqa: PLC0415
 
             request = await self.bot.tzbot.make_request(TZRequest(TimezoneFromUserIDData(user_id)))
             if request.is_successful():
-                tz = ZoneInfo(request.get_response_str())
+                return ZoneInfo(request.get_response_str())
 
-        if not tz:
-            tz = await self.user_db.get_timezone(user_id, guild_id)
+        if tz := await self.user_db.get_timezone(Member(user_id, guild_id)):
+            return tz
 
-        return tz
+        guild_config = await self.config_db.get_guild_config(guild_id)
+        if guild_config.guild_timezone:
+            try:
+                return ZoneInfo(guild_config.guild_timezone)
+            except ZoneInfoNotFoundError:
+                log.warning("Guild %s has invalid timezone %r stored; falling back.", guild_id, guild_config.guild_timezone)
+
+        return self.bot.config.daily_timezone
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message) -> None:
         """If a message is deleted, remove its associated reminder."""
-        if message.id:
-            await self.reminder_db.delete_reminder_by_message_id(message.id)
-            # TRIGGER SCHEDULER: If we just deleted the reminder we were waiting for,
-            # schedule_next() will pick the NEXT one in line.
-            await self.schedule_next()
+        await self.reminder_db.delete_reminder_by_message_id(message.id)
+        # TRIGGER SCHEDULER: If we just deleted the reminder we were waiting for,
+        # schedule_next() will pick the NEXT one in line.
+        await self.schedule_next()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -368,41 +370,42 @@ class Reminders(commands.Cog):
             await interaction.response.send_message("This isn't your reminder!", ephemeral=True)
             return
 
-        if action == "done":
-            content = interaction.message.content
-            await interaction.response.edit_message(content=f"~~{content}~~ (Completed)", view=None)
+        match action:
+            case "done":
+                content = interaction.message.content
+                await interaction.response.edit_message(content=f"~~{content}~~ (Completed)", view=None)
 
-        elif action == "snooze":
-            minutes = payload
-            await interaction.response.defer()
+            case "snooze":
+                minutes = payload
+                await interaction.response.defer()
 
-            # Extract content from the bot's own message
-            # Expected format: "⏰ <@user_id> Reminder: **{msg}**"
-            msg_content = "Reminder"
-            if interaction.message and interaction.message.content:
-                match = re.search(r"\*\*(.+?)\*\*", interaction.message.content)
-                if match:
-                    msg_content = match.group(1)
+                # Extract content from the bot's own message
+                # Expected format: "⏰ <@user_id> Reminder: **{msg}**"
+                msg_content = "Reminder"
+                if interaction.message and interaction.message.content:
+                    match = re.search(r"\*\*(.+?)\*\*", interaction.message.content)
+                    if match:
+                        msg_content = match.group(1)
 
-            remind_at = datetime.now(UTC) + timedelta(minutes=minutes)
+                remind_at = datetime.now(UTC) + timedelta(minutes=minutes)
 
-            # We use target_message_id (original command ID) to keep the chain alive if possible,
-            # or it just acts as a unique ID for this new reminder instance.
-            await self.reminder_db.add_reminder(
-                UserId(interaction.user.id),
-                GuildId(interaction.guild.id),
-                ChannelId(interaction.channel_id),
-                target_message_id,
-                msg_content,
-                remind_at,
-            )
+                # We use target_message_id (original command ID) to keep the chain alive if possible,
+                # or it just acts as a unique ID for this new reminder instance.
+                await self.reminder_db.add_reminder(
+                    UserId(interaction.user.id),
+                    GuildId(interaction.guild.id),
+                    ChannelId(interaction.channel_id),
+                    target_message_id,
+                    msg_content,
+                    remind_at,
+                )
 
-            # TRIGGER SCHEDULER
-            await self.schedule_next()
+                # TRIGGER SCHEDULER
+                await self.schedule_next()
 
-            ts = int(remind_at.timestamp())
-            await interaction.followup.send(f"💤 Snoozed for {minutes}m! (Due: <t:{ts}:R>)", ephemeral=True)
-            await interaction.message.delete()
+                ts = int(remind_at.timestamp())
+                await interaction.followup.send(f"💤 Snoozed for {minutes}m! (Due: <t:{ts}:R>)", ephemeral=True)
+                await interaction.message.delete()
 
     # Slash Command
     reminders_group = app_commands.Group(name="reminders", description="Manage your reminders")
@@ -420,8 +423,8 @@ class Reminders(commands.Cog):
         embed = discord.Embed(title="Your Reminders", color=discord.Color.blue())
         tz = await self._get_timezone(user_id, GuildId(interaction.guild.id))
 
-        for message_id, msg, remind_at_str in reminders:
-            utc_dt = datetime.strptime(remind_at_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        for message_id, msg, remind_at_epoch in reminders:
+            utc_dt = datetime.fromtimestamp(int(remind_at_epoch), UTC)
             local_dt = utc_dt.astimezone(tz)
             embed.add_field(
                 name=f"ID: {message_id} | {local_dt.strftime('%Y-%m-%d %H:%M')}",
@@ -447,4 +450,4 @@ class Reminders(commands.Cog):
 
 
 async def setup(bot: BotCore) -> None:
-    await bot.add_cog(Reminders(bot, reminder_db=bot.reminder_db, user_db=bot.user_db))
+    await bot.add_cog(Reminders(bot, reminder_db=bot.reminder_db, user_db=bot.user_db, config_db=bot.config_db))

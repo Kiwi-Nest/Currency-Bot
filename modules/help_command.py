@@ -136,4 +136,4 @@ class FeijoaCommand:
         return any(self.permissions & perm for perm in FeijoaCommand.STAFF_PERMS)
 
     def has_args(self) -> bool:
-        return self.args is not None and len(self.args) > 0
+        return bool(self.args)

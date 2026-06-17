@@ -3,8 +3,6 @@
 Handles message events and user configuration for real-time translation.
 """
 
-from __future__ import annotations
-
 import contextlib
 import logging
 import re
@@ -16,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from modules.clean_string import sanitize_chat
-from modules.dtypes import GuildId, UserId
+from modules.dtypes import GuildId, Member, UserId
 from modules.translation import TranslationClient
 
 SECOND_COOLDOWN: Final[int] = 1
@@ -99,10 +97,8 @@ class AutoTranslate(commands.Cog):
             )
 
         # Caches to reduce DB load and enable smart replies
-        # (user_id, guild_id) -> language_code
-        self.user_lang_cache: dict[tuple[UserId, GuildId], str | None] = {}
-        # (user_id, guild_id) -> bool
-        self.user_autotranslate_cache: dict[tuple[UserId, GuildId], bool] = {}
+        self.user_lang_cache: dict[UserId, str | None] = {}
+        self.user_autotranslate_cache: dict[UserId, bool] = {}
 
         # message_id -> original_language (Simple LRU)
         self.msg_context_cache: OrderedDict[int, str] = OrderedDict()
@@ -111,6 +107,12 @@ class AutoTranslate(commands.Cog):
         # (message_id, target_lang) -> None (Simple LRU for reaction spam prevention)
         self.reaction_cache: OrderedDict[tuple[int, str], None] = OrderedDict()
         self.MAX_REACTION_CACHE_SIZE = 500
+
+        # parent_msg_id → (channel_id, reply_id, src_lang, target_lang, last_sanitized_content)
+        self._reply_cache: OrderedDict[int, tuple[int, int, str, str, str]] = OrderedDict()
+        self.MAX_REPLY_CACHE_SIZE = 1000
+        # reply_id → target_lang (reverse index for smart-reply fast path)
+        self._reply_id_to_target_lang: dict[int, str] = {}
 
         # Patterns for cleanup
         self.mentionable_pattern = re.compile(r"<(?:#|@&?)\d{18,20}>")
@@ -137,6 +139,22 @@ class AutoTranslate(commands.Cog):
         self.msg_context_cache[message_id] = lang
         if len(self.msg_context_cache) > self.MAX_CACHE_SIZE:
             self.msg_context_cache.popitem(last=False)
+
+    def _track_reply(
+        self,
+        parent_id: int,
+        channel_id: int,
+        reply_id: int,
+        src_lang: str,
+        target_lang: str,
+        content: str,
+    ) -> None:
+        # Evict oldest entry's reverse-index entry before overwriting
+        if len(self._reply_cache) >= self.MAX_REPLY_CACHE_SIZE:
+            _, evicted = self._reply_cache.popitem(last=False)
+            self._reply_id_to_target_lang.pop(evicted[1], None)
+        self._reply_cache[parent_id] = (channel_id, reply_id, src_lang, target_lang, content)
+        self._reply_id_to_target_lang[reply_id] = target_lang
 
     # Slash Commands for Configuration
 
@@ -170,24 +188,24 @@ class AutoTranslate(commands.Cog):
 
         user_id = UserId(interaction.user.id)
         guild_id = GuildId(interaction.guild.id)
-        user_key = (user_id, guild_id)
+        m = Member(user_id, guild_id)
 
         # Fetch server default language
         guild_config = await self.config_db.get_guild_config(guild_id)
         server_default = guild_config.default_language or "en"
 
         value = None if lang == "none" else lang
-        await self.user_db.set_native_language(user_id, guild_id, value)
+        await self.user_db.set_native_language(m, value)
 
         # Smart auto-toggle: enable autotranslate if user language differs from server default
         effective_lang = value or server_default
         should_autotranslate = effective_lang != server_default
 
-        await self.user_db.set_autotranslate(user_id, guild_id, should_autotranslate)
+        await self.user_db.set_autotranslate(m, should_autotranslate)
 
         # Update caches
-        self.user_lang_cache[user_key] = value
-        self.user_autotranslate_cache[user_key] = should_autotranslate
+        self.user_lang_cache[user_id] = value
+        self.user_autotranslate_cache[user_id] = should_autotranslate
 
         # Build response message
         if value:
@@ -231,13 +249,12 @@ class AutoTranslate(commands.Cog):
 
         is_enabled = bool(enabled)
         await self.user_db.set_autotranslate(
-            UserId(interaction.user.id),
-            GuildId(interaction.guild.id),
+            Member(UserId(interaction.user.id), GuildId(interaction.guild.id)),
             is_enabled,
         )
 
         # Update cache
-        self.user_autotranslate_cache[(UserId(interaction.user.id), GuildId(interaction.guild.id))] = is_enabled
+        self.user_autotranslate_cache[UserId(interaction.user.id)] = is_enabled
 
         state = "ENABLED" if is_enabled else "DISABLED"
         await interaction.followup.send(f"✅ Auto-translation is now **{state}**.")
@@ -299,6 +316,7 @@ class AutoTranslate(commands.Cog):
         source: str = "auto",
         bypass_ignore: bool = False,
     ) -> str | None:
+        assert self.translator
         urls: list[str] = []
         emojis: list[str] = []
         mentionables: list[str] = []
@@ -347,6 +365,7 @@ class AutoTranslate(commands.Cog):
         show_hint: bool = False,
     ) -> None:
         """Perform translation and respond/edit the ephemeral message."""
+        assert self.translator
         # Defer if not already responded
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
@@ -374,11 +393,10 @@ class AutoTranslate(commands.Cog):
         guild_id: GuildId,
     ) -> str | None:
         """Fetch user's native language from cache or database."""
-        user_key = (user_id, guild_id)
-        if user_key in self.user_lang_cache:
-            return self.user_lang_cache[user_key]
-        native_lang = await self.user_db.get_native_language(*user_key)
-        self.user_lang_cache[user_key] = native_lang
+        if user_id in self.user_lang_cache:
+            return self.user_lang_cache[user_id]
+        native_lang = await self.user_db.get_native_language(Member(user_id, guild_id))
+        self.user_lang_cache[user_id] = native_lang
         return native_lang
 
     async def _get_user_autotranslate_status(
@@ -387,17 +405,21 @@ class AutoTranslate(commands.Cog):
         guild_id: GuildId,
     ) -> bool:
         """Fetch user's autotranslate opt-in status from cache or database."""
-        user_key = (user_id, guild_id)
-        if user_key in self.user_autotranslate_cache:
-            return self.user_autotranslate_cache[user_key]
-        is_opted_in = await self.user_db.get_autotranslate(*user_key)
-        self.user_autotranslate_cache[user_key] = is_opted_in
+        if user_id in self.user_autotranslate_cache:
+            return self.user_autotranslate_cache[user_id]
+        is_opted_in = await self.user_db.get_autotranslate(Member(user_id, guild_id))
+        self.user_autotranslate_cache[user_id] = is_opted_in
         return is_opted_in
 
     async def _get_reply_target_language(self, message: discord.Message) -> str | None:
         """Determine target language from reply context if available."""
+        assert self.translator
         if not message.reference or not message.reference.message_id:
             return None
+
+        ref_id = message.reference.message_id
+        if target_lang := self._reply_id_to_target_lang.get(ref_id):
+            return target_lang
 
         try:
             # Resolve the referenced message
@@ -414,8 +436,8 @@ class AutoTranslate(commands.Cog):
                     return context.target_lang
 
             # Smart Reply Cache Fallback
-            if message.reference.message_id in self.msg_context_cache:
-                return self.msg_context_cache[message.reference.message_id]
+            if ref_id in self.msg_context_cache:
+                return self.msg_context_cache[ref_id]
 
         except discord.NotFound, discord.HTTPException:
             pass  # Reference invalid or inaccessible
@@ -493,10 +515,16 @@ class AutoTranslate(commands.Cog):
                 target_lang,
             )
 
-            await message.reply(f"{crumb} {translation}", mention_author=False)
-
-            # Since strictly defined (Native or Server Default), always cache for smart replies
+            reply_msg = await message.reply(f"{crumb} {translation}", mention_author=False)
             self._cache_msg_context(message.id, source_lang)
+            self._track_reply(
+                message.id,
+                message.channel.id,
+                reply_msg.id,
+                source_lang,
+                target_lang,
+                sanitize_chat(message.content),
+            )
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(  # noqa: PLR0912
@@ -504,7 +532,7 @@ class AutoTranslate(commands.Cog):
         payload: discord.RawReactionActionEvent,
     ) -> None:
         """Handle flag reactions to force translation."""
-        if not self.translator or payload.user_id == self.bot.user.id or not payload.guild_id:
+        if not self.translator or not self.bot.user or payload.user_id == self.bot.user.id or not payload.guild_id:
             return
 
         # Map emoji to target language
@@ -543,15 +571,16 @@ class AutoTranslate(commands.Cog):
         # 1. Determine Source (Reaction Specific Logic)
 
         # Check if the AUTHOR of the message has a config
-        user_key = (UserId(message.author.id), GuildId(message.guild.id))
+        user_id = UserId(message.author.id)
+        guild_id = GuildId(message.guild.id)
 
         # We try to check cache first, then DB (using a fire-and-forget lookup or await)
         # Since on_raw_reaction is async, we can await DB
-        if user_key in self.user_lang_cache:
-            author_lang = self.user_lang_cache[user_key]
+        if user_id in self.user_lang_cache:
+            author_lang = self.user_lang_cache[user_id]
         else:
-            author_lang = await self.user_db.get_native_language(*user_key)
-            self.user_lang_cache[user_key] = author_lang
+            author_lang = await self.user_db.get_native_language(Member(user_id, guild_id))
+            self.user_lang_cache[user_id] = author_lang
 
         # If unconfigured, they speak the server language
         source_lang = author_lang or server_default
@@ -575,7 +604,49 @@ class AutoTranslate(commands.Cog):
 
             crumb = self.translator.get_breadcrumb_string(source_lang, target_lang)
             with contextlib.suppress(discord.HTTPException):
-                await message.reply(f"{crumb} {translation}", mention_author=False)
+                reply_msg = await message.reply(f"{crumb} {translation}", mention_author=False)
+                self._track_reply(
+                    message.id,
+                    message.channel.id,
+                    reply_msg.id,
+                    source_lang,
+                    target_lang,
+                    sanitize_chat(message.content),
+                )
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent) -> None:
+        entry = self._reply_cache.pop(payload.message_id, None)
+        if not entry:
+            return
+        channel_id, reply_id, *_ = entry
+        self._reply_id_to_target_lang.pop(reply_id, None)
+        channel = self.bot.get_channel(channel_id)
+        if isinstance(channel, discord.TextChannel | discord.Thread):
+            with contextlib.suppress(discord.HTTPException):
+                await channel.get_partial_message(reply_id).delete()
+
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent) -> None:
+        entry = self._reply_cache.get(payload.message_id)
+        if not entry or not self.translator:
+            return
+        new_content = payload.data.get("content") or ""
+        if not new_content:
+            return
+        channel_id, reply_id, src_lang, target_lang, last_content = entry
+        sanitized = sanitize_chat(new_content)
+        if sanitized == last_content:
+            return
+        translated = await self._unwanted_aware_translate(sanitized, source=src_lang, target=target_lang, bypass_ignore=True)
+        if not translated:
+            return
+        self._reply_cache[payload.message_id] = (channel_id, reply_id, src_lang, target_lang, sanitized)
+        channel = self.bot.get_channel(channel_id)
+        if isinstance(channel, discord.TextChannel | discord.Thread):
+            crumb = self.translator.get_breadcrumb_string(src_lang, target_lang)
+            with contextlib.suppress(discord.HTTPException):
+                await channel.get_partial_message(reply_id).edit(content=f"{crumb} {translated}")
 
 
 async def setup(bot: BotCore) -> None:

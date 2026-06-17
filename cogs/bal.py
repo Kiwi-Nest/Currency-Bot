@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modules.dtypes import GuildId, UserId
+from modules.dtypes import GuildId, Member, UserId
 from modules.enums import StatName
 from modules.guild_cog import GuildOnlyHybridCog
 
@@ -29,13 +29,15 @@ class Bal(GuildOnlyHybridCog):
     @app_commands.describe(member="User whose balance to show")
     async def bal(self, ctx: commands.Context, member: discord.Member | None = None) -> None:
         # If no member is provided, default to the command author.
+        assert ctx.guild
         target_member = member or ctx.author
 
         user_id = UserId(target_member.id)
         guild_id = GuildId(ctx.guild.id)
 
-        currency_balance = await self.user_db.get_stat(user_id, guild_id, StatName.CURRENCY)
-        bump_count = await self.user_db.get_stat(user_id, guild_id, StatName.BUMPS)
+        m = Member(user_id, guild_id)
+        currency_balance = await self.user_db.get_stat(m, StatName.CURRENCY)
+        bump_count = await self.user_db.get_stat(m, StatName.BUMPS)
         description = f"{target_member.mention}\nWallet: ${currency_balance:,}"
         if bump_count > 0:
             description += f"\nBumps: {bump_count}"
@@ -46,7 +48,7 @@ class Bal(GuildOnlyHybridCog):
             color=discord.Colour.green(),
         )
         embed.set_author(name=target_member.name, icon_url=target_member.display_avatar)
-        embed.set_footer(text=f"{ctx.author.display_name} | Balance")
+        embed.set_footer(text=f"{target_member.display_name} | Balance")
         embed.timestamp = discord.utils.utcnow()
         await ctx.send(embed=embed)
         log.info(

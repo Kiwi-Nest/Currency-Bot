@@ -10,7 +10,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import shlex
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -370,10 +369,10 @@ class ServerManager:
 
     async def _run_tmux_command(self, script_path: Path, command: str) -> None:
         """Execute a command via the server's tmux.sh script."""
-        cmd = f"{shlex.quote(str(script_path))} {shlex.quote(command)}"
         try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
+            proc = await asyncio.create_subprocess_exec(
+                str(script_path),
+                command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -426,7 +425,7 @@ class ServerManager:
                     key, value = line.split("=", 1)
                     key = key.strip()
                     value = value.strip()
-                    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                         value = value[1:-1]
                     props[key] = value
         return props

@@ -19,23 +19,24 @@ import asyncio
 import datetime
 import logging
 import math
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 # Local Imports
 if TYPE_CHECKING:
     import aiohttp
-    import aiosqlite
 
     from modules.CurrencyLedgerDB import CurrencyLedgerDB
-    from modules.Database import Database
-    from modules.dtypes import GuildId, PositiveInt, UserId
+    from modules.Database import Database, WriteTx
+    from modules.dtypes import GuildId, UserId
     from modules.UserDB import UserDB
 
-# Import new exceptions
 from modules.aio_twelvedata import AioTwelveDataClient, AioTwelveDataError, AioTwelveDataRequestError, Ticker
 from modules.CurrencyLedgerDB import COLLATERAL_POOL_ID, SYSTEM_USER_ID
+from modules.Database import snowflake
+from modules.dtypes import Member, NonNegativeInt, PositiveInt
 from modules.enums import StatName
-from modules.exceptions import UserError
+from modules.errors import InsufficientFunds
+from modules.exceptions import InsufficientFundsError, UserError
 
 # Logging
 log = logging.getLogger(__name__)
@@ -56,25 +57,14 @@ ALLOWED_STOCKS: Final[set[Ticker]] = {
 CACHE_TTL: Final[int] = 300  # 5 minutes
 
 
-def _parse_api_time(time_str: str) -> datetime.timedelta | None:
+def _parse_api_time(time_str: str | None) -> datetime.timedelta | None:
     """Parse 'HH:MM:SS' duration string into a timedelta."""
     if not time_str or time_str == "00:00:00":
         return None
 
     try:
-        # Split the string into components
-        parts = time_str.split(":")
-        if len(parts) != 3:
-            msg = "Time string not in HH:MM:SS format"
-            raise ValueError(msg)
-
-        # Manually parse hours, minutes, and seconds as integers
-        hours = int(parts[0])
-        minutes = int(parts[1])
-        seconds = int(parts[2])
-
-        # Create a timedelta directly from the duration components
-        return datetime.timedelta(hours=hours, minutes=minutes, seconds=seconds)
+        t = datetime.time.fromisoformat(time_str)
+        return datetime.timedelta(hours=t.hour, minutes=t.minute, seconds=t.second)
     except ValueError, TypeError:
         # This catches format mismatches or non-integer parts
         log.warning("Could not parse API time string: %s", time_str)
@@ -208,7 +198,7 @@ class PriceCache:
                         return self._prices  # Returns empty {}
 
                 # Now, set the "intelligent TTL"
-                time_to_open_str = cast("str", self._market_state.get("time_to_open"))
+                time_to_open_str = self._market_state.get("time_to_open")
                 time_to_open_delta = _parse_api_time(time_to_open_str)
 
                 if time_to_open_delta:
@@ -257,10 +247,6 @@ class PriceCache:
 # Custom Exceptions (can be shared or defined here)
 
 
-class InsufficientFundsError(UserError):
-    """Raised when a user doesn't have enough cash for a transaction."""
-
-
 class PortfolioNotFoundError(UserError):
     """Raised when a user's portfolio doesn't exist yet."""
 
@@ -296,25 +282,23 @@ class TradingLogic:
         """Initialize the database table for portfolios."""
         async with self.database.get_conn() as conn:
             await conn.execute(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS positions (
-                    position_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id         INTEGER NOT NULL CHECK(user_id > 1000000 AND user_id < 10000000000000000000),
-                    guild_id        INTEGER NOT NULL CHECK(guild_id > 1000000 AND guild_id < 10000000000000000000),
-                    ticker          TEXT NOT NULL,
-                    notional_dollars INTEGER NOT NULL CHECK(notional_dollars != 0),
+                    position_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id            INTEGER NOT NULL {snowflake("user_id")},
+                    guild_id           INTEGER NOT NULL {snowflake("guild_id")},
+                    ticker             TEXT NOT NULL,
+                    notional_dollars   INTEGER NOT NULL CHECK(notional_dollars != 0),
                     collateral_dollars INTEGER NOT NULL CHECK(collateral_dollars > 0),
-                    entry_price     REAL NOT NULL CHECK(entry_price > 0),    -- Price at open
-                    timestamp       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
-                    FOREIGN KEY (user_id, guild_id) REFERENCES users(discord_id, guild_id)
-                ) STRICT;
+                    entry_price        REAL NOT NULL CHECK(entry_price > 0),
+                    timestamp          INTEGER NOT NULL DEFAULT (unixepoch()),
+                    FOREIGN KEY (user_id, guild_id) REFERENCES memberships(discord_id, guild_id)
+                        ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+                ) STRICT
                 """,
             )
-            # Add an index for guild_id and last_active_timestamp to speed up activity queries.
             await conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_positions_user ON positions (user_id, guild_id);
-                """,
+                "CREATE INDEX IF NOT EXISTS idx_positions_user ON positions(user_id, guild_id)",
             )
             await conn.commit()
             log.info("Initialized positions database table.")
@@ -331,42 +315,41 @@ class TradingLogic:
 
     async def _update_cash_balance(
         self,
-        conn: aiosqlite.Connection,  # The transaction connection
+        tx: WriteTx,
         user_id: UserId,
         guild_id: GuildId,
         cash_change_int: int,
     ) -> int:
-        """Atomically update a user's cash balance.
-
-        Raises InsufficientFundsError if a debit fails.
-        Returns the new cash balance (as a Decimal).
-        """
+        """Raw balance mutator. Raises InsufficientFundsError if debit fails. Returns new balance."""
         if cash_change_int > 0:
-            # A. Credit Cash (Safe)
-            await conn.execute(
-                f"""INSERT INTO {self.user_db.USERS_TABLE} (discord_id, guild_id, currency) VALUES (?, ?, ?)
-                     ON CONFLICT(discord_id, guild_id) DO UPDATE SET currency = currency + ?""",  # noqa: S608
-                (user_id, guild_id, cash_change_int, cash_change_int),
+            await tx.execute("INSERT OR IGNORE INTO users(discord_id) VALUES (?)", (user_id,))
+            await tx.execute(
+                """INSERT INTO memberships (discord_id, guild_id, currency) VALUES (?, ?, ?)
+                   ON CONFLICT(discord_id, guild_id) DO UPDATE SET
+                       currency = currency + excluded.currency""",
+                (user_id, guild_id, cash_change_int),
             )
         elif cash_change_int < 0:
-            # B. Debit Cash (Atomic Check)
-            debit_amount = abs(cash_change_int)
-            cursor = await conn.execute(
-                f"""UPDATE {self.user_db.USERS_TABLE}
-                     SET currency = currency - ?
-                     WHERE discord_id = ? AND guild_id = ? AND currency >= ?""",  # noqa: S608
-                (debit_amount, user_id, guild_id, debit_amount),
+            debit = abs(cash_change_int)
+            cursor = await tx.execute(
+                """UPDATE memberships SET currency = currency - ?
+                   WHERE discord_id = ? AND guild_id = ? AND currency >= ?""",
+                (debit, user_id, guild_id, debit),
             )
             if cursor.rowcount == 0:
-                msg = f"Insufficient funds. You need ${debit_amount} to execute this trade."
-                raise InsufficientFundsError(msg)
-
-        # C. Get the new balance *after* the update
-        cursor = await conn.execute(
-            f"SELECT currency FROM {self.user_db.USERS_TABLE} WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
+                bal = await tx.execute(
+                    "SELECT currency FROM memberships WHERE discord_id = ? AND guild_id = ?",
+                    (user_id, guild_id),
+                )
+                row = await bal.fetchone()
+                available = NonNegativeInt(row[0] if row else 0)
+                raise InsufficientFundsError(InsufficientFunds(available=available, required=PositiveInt(debit)))
+        cursor = await tx.execute(
+            "SELECT currency FROM memberships WHERE discord_id = ? AND guild_id = ?",
             (user_id, guild_id),
         )
-        return (await cursor.fetchone())[0]
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def open_position(
         self,
@@ -415,107 +398,90 @@ class TradingLogic:
             cash_change_int = -dollar_amount  # Debit for collateral
             action = "SHORTED"
 
-        async with self.database.get_conn() as conn:
-            try:
-                # 1. Update Cash (raises InsufficientFundsError)
-                await self._update_cash_balance(
-                    conn,
-                    user_id,
-                    guild_id,
-                    cash_change_int,
+        async with self.database.transaction() as conn:
+            # 1. Update Cash (raises InsufficientFundsError)
+            await self._update_cash_balance(conn, user_id, guild_id, cash_change_int)
+
+            # 2. Log the collateral transfer to the ledger
+            await self.ledger_db.log_event(
+                tx=conn,
+                guild_id=guild_id,
+                event_type="TRANSFER",
+                event_reason="TRADE_OPEN_COLLATERAL",
+                sender_id=user_id,
+                receiver_id=COLLATERAL_POOL_ID,
+                amount=dollar_amount,
+                initiator_id=user_id,
+                reference_id=f"TICKER:{ticker.upper()}",  # Placeholder, since position_id doesn't exist yet
+            )
+
+            # 2. Check for a stackable position OF THE SAME TYPE
+            # We must only stack longs on longs (notional_dollars > 0)
+            # and shorts on shorts (notional_dollars < 0)
+            stack_direction_check = "notional_dollars > 0" if trade_type == "BUY" else "notional_dollars < 0"
+
+            cursor = await conn.execute(
+                f"""SELECT position_id, notional_dollars, collateral_dollars FROM positions
+                    WHERE user_id = ? AND guild_id = ? AND ticker = ?
+                    AND entry_price = ? AND {stack_direction_check}""",  # noqa: S608 (f-string is safe)
+                (user_id, guild_id, ticker, current_price_float),
+            )
+            existing_position = await cursor.fetchone()
+
+            was_stacked = False
+            total_notional_in_position = 0
+
+            if existing_position:
+                # Stack the position
+                was_stacked = True
+                position_id, existing_notional, existing_collateral = existing_position
+                new_notional = existing_notional + notional_dollars_int
+                new_collateral = existing_collateral + collateral_dollars_int
+                total_notional_in_position = new_notional
+
+                await conn.execute(
+                    "UPDATE positions SET notional_dollars = ?, collateral_dollars = ? WHERE position_id = ?",
+                    (new_notional, new_collateral, position_id),
                 )
-
-                # 2. Log the collateral transfer to the ledger
-                await self.ledger_db.log_event(
-                    conn=conn,
-                    guild_id=guild_id,
-                    event_type="TRANSFER",
-                    event_reason="TRADE_OPEN_COLLATERAL",
-                    sender_id=user_id,
-                    receiver_id=COLLATERAL_POOL_ID,
-                    amount=dollar_amount,
-                    initiator_id=user_id,
-                    reference_id=f"TICKER:{ticker.upper()}",  # Placeholder, since position_id doesn't exist yet
-                )
-
-                # 2. Check for a stackable position OF THE SAME TYPE
-                # We must only stack longs on longs (notional_dollars > 0)
-                # and shorts on shorts (notional_dollars < 0)
-                stack_direction_check = "notional_dollars > 0" if trade_type == "BUY" else "notional_dollars < 0"
-
-                cursor = await conn.execute(
-                    f"""SELECT position_id, notional_dollars, collateral_dollars FROM positions
-                        WHERE user_id = ? AND guild_id = ? AND ticker = ?
-                        AND entry_price = ? AND {stack_direction_check}""",  # noqa: S608 (f-string is safe)
-                    (user_id, guild_id, ticker, current_price_float),
-                )
-                existing_position = await cursor.fetchone()
-
-                was_stacked = False
-                total_notional_in_position = 0
-
-                if existing_position:
-                    # Stack the position
-                    was_stacked = True
-                    position_id, existing_notional, existing_collateral = existing_position
-                    new_notional = existing_notional + notional_dollars_int
-                    new_collateral = existing_collateral + collateral_dollars_int
-                    total_notional_in_position = new_notional
-
-                    await conn.execute(
-                        "UPDATE positions SET notional_dollars = ?, collateral_dollars = ? WHERE position_id = ?",
-                        (new_notional, new_collateral, position_id),
-                    )
-                else:
-                    # Create a new position lot
-                    was_stacked = False
-                    total_notional_in_position = notional_dollars_int
-                    await conn.execute(
-                        """
-                        INSERT INTO positions (user_id, guild_id, ticker, notional_dollars, collateral_dollars, entry_price)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            user_id,
-                            guild_id,
-                            ticker,
-                            notional_dollars_int,
-                            collateral_dollars_int,
-                            current_price_float,
-                        ),
-                    )
-
-                # 3. Commit
-                await conn.commit()
-
-                log.info(
-                    "Position %s for user %s: %s $%s of %s @ $%s",
-                    "stacked" if was_stacked else "opened",
-                    user_id,
-                    action,
-                    dollar_amount,
-                    ticker,
-                    current_price_float,
-                )
-
-            except Exception:
-                await conn.rollback()
-                log.exception(
-                    "Position open failed and was rolled back for user %s",
-                    user_id,
-                )
-                raise
             else:
-                return (
-                    current_price_float,
-                    notional_dollars_int,
-                    action,
-                    timestamp,
-                    was_stacked,
-                    total_notional_in_position,
+                # Create a new position lot
+                was_stacked = False
+                total_notional_in_position = notional_dollars_int
+                await conn.execute(
+                    """
+                    INSERT INTO positions (user_id, guild_id, ticker, notional_dollars, collateral_dollars, entry_price)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        guild_id,
+                        ticker,
+                        notional_dollars_int,
+                        collateral_dollars_int,
+                        current_price_float,
+                    ),
                 )
 
-    async def close_position(  # noqa: PLR0915
+            log.info(
+                "Position %s for user %s: %s $%s of %s @ $%s",
+                "stacked" if was_stacked else "opened",
+                user_id,
+                action,
+                dollar_amount,
+                ticker,
+                current_price_float,
+            )
+
+        return (
+            current_price_float,
+            notional_dollars_int,
+            action,
+            timestamp,
+            was_stacked,
+            total_notional_in_position,
+        )
+
+    async def close_position(
         self,
         user_id: UserId,
         guild_id: GuildId,
@@ -532,180 +498,162 @@ class TradingLogic:
             Tuple of (ticker, pnl_precise, total_credit_precise, final_credit_int, collateral_dollars_to_close, is_partial_close)
 
         """
-        async with self.database.get_conn() as conn:
-            try:
-                # 1. Get the position
-                cursor = await conn.execute(
-                    """
-                    SELECT ticker, notional_dollars, collateral_dollars, entry_price
-                    FROM positions
-                    WHERE position_id = ? AND user_id = ? AND guild_id = ?
-                    """,
-                    (position_id, user_id, guild_id),
+        async with self.database.transaction() as conn:
+            # 1. Get the position
+            cursor = await conn.execute(
+                """
+                SELECT ticker, notional_dollars, collateral_dollars, entry_price
+                FROM positions
+                WHERE position_id = ? AND user_id = ? AND guild_id = ?
+                """,
+                (position_id, user_id, guild_id),
+            )
+            row = await cursor.fetchone()
+
+            if not row:
+                msg = f"Position ID {position_id} not found or does not belong to you."
+                raise PortfolioNotFoundError(msg)
+
+            (
+                ticker,
+                notional_dollars_total,
+                collateral_dollars_total,
+                entry_price,
+            ) = row
+            ticker = str(ticker)
+            notional_dollars_total = int(notional_dollars_total)
+            collateral_dollars_total = int(collateral_dollars_total)
+            entry_price = float(entry_price)
+
+            # 2. Determine Amount to Close
+            # Default to a full close
+            proportion_to_close = 1.0
+            is_partial_close = False
+
+            if close_amount is not None and close_amount < collateral_dollars_total:
+                is_partial_close = True
+                proportion_to_close = close_amount / collateral_dollars_total
+
+            # Calculate the amounts for *this* close
+            notional_dollars_to_close = notional_dollars_total * proportion_to_close
+            collateral_dollars_to_close = collateral_dollars_total * proportion_to_close
+
+            # 2. Get Current Price
+            price_map = await self.price_cache.get_fresh_prices()
+            current_price = price_map.get(ticker)
+            if current_price is None or float(current_price) <= 0:
+                msg = f"Could not close position: Price for {ticker} is currently unavailable."
+                raise PriceNotAvailableError(msg)
+
+            current_price_float = float(current_price)
+
+            # 3. Calculate P&L and Credit
+            # This simple math works for both long (invested_dollars > 0)
+            # and short (invested_dollars < 0)
+            price_change_pct = (current_price_float / entry_price) - 1.0
+            pnl_precise = notional_dollars_to_close * price_change_pct
+
+            # The total value to return to the user
+            # For Long: 100 (principal) + 16.66 (pnl) = 116.66
+            # For Short: 100 (abs(principal)) + 16.66 (pnl) = 116.66
+            total_credit_precise = collateral_dollars_to_close + pnl_precise
+
+            # 4. Apply Slippage (The Money Sink)
+            # We floor the credit. e.g., 116.66 -> 116.
+            final_credit_int = math.floor(max(0, total_credit_precise))
+
+            # 5. Update Bank Account
+            await self._update_cash_balance(conn, user_id, guild_id, final_credit_int)
+
+            # 6. Log the close events
+            pnl_int = final_credit_int - int(collateral_dollars_to_close)
+            reference_str = f"position_id:{position_id}"
+
+            if pnl_int >= 0:
+                # Close with Profit
+                # 6a. Return the Collateral
+                await self.ledger_db.log_event(
+                    tx=conn,
+                    guild_id=guild_id,
+                    event_type="TRANSFER",
+                    event_reason="TRADE_CLOSE_COLLATERAL",
+                    sender_id=COLLATERAL_POOL_ID,
+                    receiver_id=user_id,
+                    amount=int(collateral_dollars_to_close),
+                    initiator_id=user_id,
+                    reference_id=reference_str,
                 )
-                row = await cursor.fetchone()
-
-                if not row:
-                    msg = f"Position ID {position_id} not found or does not belong to you."
-                    raise PortfolioNotFoundError(msg)
-
-                (
-                    ticker,
-                    notional_dollars_total,
-                    collateral_dollars_total,
-                    entry_price,
-                ) = row
-                ticker = str(ticker)
-                notional_dollars_total = int(notional_dollars_total)
-                collateral_dollars_total = int(collateral_dollars_total)
-                entry_price = float(entry_price)
-
-                # 2. Determine Amount to Close
-                # Default to a full close
-                proportion_to_close = 1.0
-                is_partial_close = False
-
-                if close_amount is not None and close_amount < collateral_dollars_total:
-                    is_partial_close = True
-                    proportion_to_close = close_amount / collateral_dollars_total
-
-                # Calculate the amounts for *this* close
-                notional_dollars_to_close = notional_dollars_total * proportion_to_close
-                collateral_dollars_to_close = collateral_dollars_total * proportion_to_close
-
-                # 2. Get Current Price
-                price_map = await self.price_cache.get_fresh_prices()
-                current_price = price_map.get(ticker)
-                if current_price is None or float(current_price) <= 0:
-                    msg = f"Could not close position: Price for {ticker} is currently unavailable."
-                    raise PriceNotAvailableError(msg)
-
-                current_price_float = float(current_price)
-
-                # 3. Calculate P&L and Credit
-                # This simple math works for both long (invested_dollars > 0)
-                # and short (invested_dollars < 0)
-                price_change_pct = (current_price_float / entry_price) - 1.0
-                pnl_precise = notional_dollars_to_close * price_change_pct
-
-                # The total value to return to the user
-                # For Long: 100 (principal) + 16.66 (pnl) = 116.66
-                # For Short: 100 (abs(principal)) + 16.66 (pnl) = 116.66
-                total_credit_precise = collateral_dollars_to_close + pnl_precise
-
-                # 4. Apply Slippage (The Money Sink)
-                # We floor the credit. e.g., 116.66 -> 116.
-                final_credit_int = math.floor(max(0, total_credit_precise))
-
-                # 5. Update Bank Account
-                await self._update_cash_balance(
-                    conn,
-                    user_id,
-                    guild_id,
-                    final_credit_int,  # This is the final credit
-                )
-
-                # 6. Log the close events
-                pnl_int = final_credit_int - int(collateral_dollars_to_close)
-                reference_str = f"position_id:{position_id}"
-
-                if pnl_int >= 0:
-                    # Close with Profit
-                    # 6a. Return the Collateral
+                # 6b. Mint the *Integer* Profit
+                if pnl_int > 0:
                     await self.ledger_db.log_event(
-                        conn=conn,
+                        tx=conn,
+                        guild_id=guild_id,
+                        event_type="MINT",
+                        event_reason="TRADE_PROFIT",
+                        sender_id=SYSTEM_USER_ID,
+                        receiver_id=user_id,
+                        amount=pnl_int,
+                        initiator_id=user_id,
+                        reference_id=reference_str,
+                    )
+            else:
+                # Close with Loss
+                loss_int = abs(pnl_int)  # pnl_int is negative here
+                # 6a. Return the Remaining Collateral (if any)
+                if final_credit_int > 0:
+                    await self.ledger_db.log_event(
+                        tx=conn,
                         guild_id=guild_id,
                         event_type="TRANSFER",
                         event_reason="TRADE_CLOSE_COLLATERAL",
                         sender_id=COLLATERAL_POOL_ID,
                         receiver_id=user_id,
-                        amount=int(collateral_dollars_to_close),
+                        amount=final_credit_int,
                         initiator_id=user_id,
                         reference_id=reference_str,
                     )
-                    # 6b. Mint the *Integer* Profit
-                    if pnl_int > 0:
-                        await self.ledger_db.log_event(
-                            conn=conn,
-                            guild_id=guild_id,
-                            event_type="MINT",
-                            event_reason="TRADE_PROFIT",
-                            sender_id=SYSTEM_USER_ID,
-                            receiver_id=user_id,
-                            amount=pnl_int,
-                            initiator_id=user_id,
-                            reference_id=reference_str,
-                        )
-                else:
-                    # Close with Loss
-                    loss_int = abs(pnl_int)  # pnl_int is negative here
-                    # 6a. Return the Remaining Collateral (if any)
-                    if final_credit_int > 0:
-                        await self.ledger_db.log_event(
-                            conn=conn,
-                            guild_id=guild_id,
-                            event_type="TRANSFER",
-                            event_reason="TRADE_CLOSE_COLLATERAL",
-                            sender_id=COLLATERAL_POOL_ID,
-                            receiver_id=user_id,
-                            amount=final_credit_int,
-                            initiator_id=user_id,
-                            reference_id=reference_str,
-                        )
-                    # 6b. Burn the *Integer* Loss
-                    await self.ledger_db.log_event(
-                        conn=conn,
-                        guild_id=guild_id,
-                        event_type="BURN",
-                        event_reason="TRADE_LOSS",
-                        sender_id=COLLATERAL_POOL_ID,
-                        receiver_id=SYSTEM_USER_ID,
-                        amount=loss_int,
-                        initiator_id=user_id,
-                        reference_id=reference_str,
-                    )
-
-                # 7. Update or Delete the position
-                if is_partial_close:
-                    new_notional = notional_dollars_total - notional_dollars_to_close
-                    new_collateral = collateral_dollars_total - collateral_dollars_to_close
-                    await conn.execute(
-                        "UPDATE positions SET notional_dollars = ?, collateral_dollars = ? WHERE position_id = ?",
-                        (new_notional, new_collateral, position_id),
-                    )
-                else:
-                    await conn.execute(
-                        "DELETE FROM positions WHERE position_id = ?",
-                        (position_id,),
-                    )
-
-                # 8. Commit
-                await conn.commit()
-
-                log.info(
-                    "Position %s closed for user %s. P&L: %s",
-                    position_id,
-                    user_id,
-                    pnl_precise,
+                # 6b. Burn the *Integer* Loss
+                await self.ledger_db.log_event(
+                    tx=conn,
+                    guild_id=guild_id,
+                    event_type="BURN",
+                    event_reason="TRADE_LOSS",
+                    sender_id=COLLATERAL_POOL_ID,
+                    receiver_id=SYSTEM_USER_ID,
+                    amount=loss_int,
+                    initiator_id=user_id,
+                    reference_id=reference_str,
                 )
 
-            except Exception:
-                await conn.rollback()
-                log.exception(
-                    "Position close failed and was rolled back for user %s",
-                    user_id,
+            # 7. Update or Delete the position
+            if is_partial_close:
+                new_notional = notional_dollars_total - notional_dollars_to_close
+                new_collateral = collateral_dollars_total - collateral_dollars_to_close
+                await conn.execute(
+                    "UPDATE positions SET notional_dollars = ?, collateral_dollars = ? WHERE position_id = ?",
+                    (new_notional, new_collateral, position_id),
                 )
-                raise
-
             else:
-                return (
-                    ticker,
-                    pnl_precise,
-                    total_credit_precise,
-                    final_credit_int,
-                    int(collateral_dollars_to_close),
-                    is_partial_close,
+                await conn.execute(
+                    "DELETE FROM positions WHERE position_id = ?",
+                    (position_id,),
                 )
+
+            log.info(
+                "Position %s closed for user %s. P&L: %s",
+                position_id,
+                user_id,
+                pnl_precise,
+            )
+
+        return (
+            ticker,
+            pnl_precise,
+            total_credit_precise,
+            final_credit_int,
+            int(collateral_dollars_to_close),
+            is_partial_close,
+        )
 
     # Other Business Logic (e.g., portfolio P&L calculation)
     def is_market_open(self) -> bool:
@@ -723,8 +671,7 @@ class TradingLogic:
 
         # 1. Fetch cash from UserDB
         user_cash_int = await self.user_db.get_stat(
-            user_id,
-            guild_id,
+            Member(user_id, guild_id),
             StatName.CURRENCY,
         )
         user_cash_balance = float(user_cash_int)  # Use float for calculations

@@ -1,4 +1,3 @@
-# new_daily.py
 """Handle '/daily' command.
 
 Uses ephemeral messages to reduce channel spam.
@@ -10,19 +9,20 @@ import logging
 import random
 import time
 from typing import TYPE_CHECKING, Final, override
-from zoneinfo import ZoneInfo
 
 import discord
 from discord.ext import commands, tasks
 
-from modules.dtypes import GuildId, PositiveInt, ReminderPreference, UserId
+from modules.dtypes import GuildId, Member, PositiveInt, ReminderPreference, UserId
 from modules.guild_cog import GuildOnlyHybridCog
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from zoneinfo import ZoneInfo
 
     from modules.BotCore import BotCore
     from modules.CurrencyLedgerDB import CurrencyLedgerDB
+    from modules.MemberCountDB import MemberCountDB
     from modules.TaskDB import TaskDB
     from modules.UserDB import UserDB
 
@@ -60,7 +60,7 @@ class DailyView(discord.ui.View):
 
     def _create_share_embed(self) -> discord.Embed:
         """Create the public embed for when a user shares their daily claim."""
-        is_jackpot = self.daily_mon > JACKPOT_THRESHOLD
+        is_jackpot = self.daily_mon >= JACKPOT_THRESHOLD
         if is_jackpot:
             title = "🎉 JACKPOT! 🎉"
             description = f"**{self.author.mention} hit the jackpot and received ${self.daily_mon:,}!**"
@@ -89,7 +89,7 @@ class DailyView(discord.ui.View):
             "NEVER": "Success! Reminders have been disabled.",
         }
         if interaction.guild:
-            await self.user_db.set_daily_reminder_preference(self.owner_id, preference, GuildId(interaction.guild.id))
+            await self.user_db.set_daily_reminder_preference(Member(self.owner_id, GuildId(interaction.guild.id)), preference)
         await interaction.response.edit_message(view=self)
         await interaction.followup.send(messages[preference], ephemeral=True)
 
@@ -169,11 +169,20 @@ class Daily(GuildOnlyHybridCog):
         user_db: UserDB,
         task_db: TaskDB,
         ledger_db: CurrencyLedgerDB,
+        member_count_db: MemberCountDB,
+        daily_timezone: ZoneInfo,
     ) -> None:
         self.bot = bot
         self.user_db = user_db
         self.task_db = task_db
         self.ledger_db = ledger_db
+        self.member_count_db = member_count_db
+        self.daily_timezone = daily_timezone
+
+        # Create the task loop dynamically with the configured timezone
+        loop_time = datetime.time(0, 0, tzinfo=daily_timezone)
+        self.daily_management_task = tasks.loop(time=loop_time)(self._daily_management_task_impl)
+        self.daily_management_task.before_loop(self._before_daily_management_task)
         self.daily_management_task.start()
 
     @override
@@ -181,8 +190,7 @@ class Daily(GuildOnlyHybridCog):
         """Clean up when the cog is unloaded."""
         self.daily_management_task.cancel()
 
-    @tasks.loop(time=datetime.time(0, 0, tzinfo=ZoneInfo("Pacific/Auckland")))
-    async def daily_management_task(self) -> None:
+    async def _daily_management_task_impl(self) -> None:
         """Handle daily resets and reminders using pure bulk operations."""
         log.info("Starting daily management task...")
 
@@ -200,6 +208,19 @@ class Daily(GuildOnlyHybridCog):
 
         except Exception:
             log.exception("An error occurred during the daily management task.")
+
+        try:
+            own_bot_id = UserId(self.bot.user.id) if self.bot.user else None
+            for guild in self.bot.guilds:
+                guild_id = GuildId(guild.id)
+                members = [
+                    (UserId(m.id), int(m.joined_at.timestamp() * 1000)) for m in guild.members if not m.bot and m.joined_at
+                ]
+                await self.member_count_db.sync_member_joins(guild_id, members)
+                await self.member_count_db.reconcile(guild_id, own_bot_id)
+        except Exception:
+            log.exception("Failed to sync member joins.")
+
         finally:
             # After running, persist the *next* run time to the database.
             next_run_time = self.daily_management_task.next_iteration
@@ -207,8 +228,7 @@ class Daily(GuildOnlyHybridCog):
                 log.info("Persisting next DAILY_RESET time: %s", next_run_time.isoformat())
                 await self.task_db.schedule_task("DAILY_RESET", next_run_time.timestamp())
 
-    @daily_management_task.before_loop
-    async def before_daily_management_task(self) -> None:
+    async def _before_daily_management_task(self) -> None:
         """Wait until the bot is ready and handle any missed runs."""
         await self.bot.wait_until_ready()
 
@@ -267,10 +287,10 @@ class Daily(GuildOnlyHybridCog):
     @commands.cooldown(2, SECOND_COOLDOWN * 10, commands.BucketType.user)
     async def daily(self, ctx: commands.Context) -> None:
         # Atomically attempt to claim the daily. If it fails, they've already claimed.
-        if not await self.user_db.attempt_daily_claim(UserId(ctx.author.id), GuildId(ctx.guild.id)):
+        if not await self.user_db.attempt_daily_claim(Member(UserId(ctx.author.id), GuildId(ctx.guild.id))):
             embed = discord.Embed(
                 title="Already Claimed",
-                description="You have already claimed your daily reward! Wait for the next reset at midnight Auckland time.",
+                description="You have already claimed your daily reward! Wait for the next reset at midnight.",
                 color=discord.Colour.red(),
             )
             await ctx.send(embed=embed, ephemeral=True)
@@ -280,8 +300,7 @@ class Daily(GuildOnlyHybridCog):
         daily_mon = PositiveInt(random.randint(100, 1000) if random.random() < 0.01 else random.randint(20, 50))
 
         new_balance = await self.user_db.mint_currency(
-            user_id=UserId(ctx.author.id),
-            guild_id=GuildId(ctx.guild.id),
+            Member(UserId(ctx.author.id), GuildId(ctx.guild.id)),
             amount=daily_mon,
             event_reason="DAILY_CLAIM",
             ledger_db=self.ledger_db,
@@ -295,14 +314,14 @@ class Daily(GuildOnlyHybridCog):
         )
 
         title = "🎉 Daily Claim Successful! 🎉"
-        if daily_mon > JACKPOT_THRESHOLD:
+        if daily_mon >= JACKPOT_THRESHOLD:
             title = "🎊 JACKPOT! 🎊"
 
         response_content = (
             f"### {title}\n"
             f"You have received **${daily_mon:,}**!\n"
             f"Your new balance is **${new_balance:,}**.\n\n"
-            f"Your next claim will be available after the daily reset at midnight NZ time."
+            f"Your next claim will be available after the daily reset at midnight {self.daily_timezone} time."
         )
 
         view = DailyView(
@@ -326,5 +345,7 @@ async def setup(bot: BotCore) -> None:
             user_db=bot.user_db,
             task_db=bot.task_db,
             ledger_db=bot.ledger_db,
+            member_count_db=bot.member_count_db,
+            daily_timezone=bot.config.daily_timezone,
         ),
     )

@@ -1,7 +1,10 @@
 """User privacy commands: /my-data (GDPR Art. 15) and /forget-me (GDPR Art. 17)."""
 
 import asyncio
+import io
+import json
 import logging
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Final
 
 import discord
@@ -75,64 +78,74 @@ class Privacy(commands.Cog):
             )
 
             # Guild memberships
-            if data.guilds:
-                guild_info = "\n".join(
-                    [
-                        f"Guild {row.guild_id}: {row.currency} currency, {row.xp} XP, {row.bumps} bumps, level {row.level}"
-                        for row in data.guilds
-                    ],
-                )
-                embed.add_field(
-                    name=f"Guild Memberships ({len(data.guilds)})",
-                    value=guild_info[:1024],
-                    inline=False,
-                )
-            else:
-                embed.add_field(name="Guild Memberships", value="None", inline=False)
+            guild_value = (
+                "\n".join(
+                    f"Guild {row.guild_id}: {row.currency} currency, {row.xp} XP, "
+                    f"{row.bumps} bumps, level {row.level}, tz={row.timezone}, "
+                    f"daily-reminder={row.daily_reminder_preference}"
+                    for row in data.guilds
+                )[:1024]
+                if data.guilds
+                else "None"
+            )
+            embed.add_field(
+                name=f"Guild Memberships ({len(data.guilds)})" if data.guilds else "Guild Memberships",
+                value=guild_value,
+                inline=False,
+            )
 
-            # Invites
-            if data.invites:
-                invite_info = f"{len(data.invites)} guilds joined"
-                embed.add_field(name="Invites", value=invite_info, inline=False)
-            else:
-                embed.add_field(name="Invites", value="None", inline=False)
+            embed.add_field(
+                name="Invites",
+                value=f"{len(data.invites)} guilds joined" if data.invites else "None",
+                inline=False,
+            )
 
-            # Reminders
-            if data.reminders:
-                reminder_count = len(data.reminders)
-                embed.add_field(
-                    name="Reminders",
-                    value=f"{reminder_count} active reminders",
-                    inline=False,
-                )
-            else:
-                embed.add_field(name="Reminders", value="None", inline=False)
+            embed.add_field(
+                name="Reminders",
+                value=f"{len(data.reminders)} active reminders" if data.reminders else "None",
+                inline=False,
+            )
 
-            # Trading positions
-            if data.positions:
-                position_info = f"{len(data.positions)} open positions"
-                embed.add_field(name="Trading Positions", value=position_info, inline=False)
-            else:
-                embed.add_field(name="Trading Positions", value="None", inline=False)
+            embed.add_field(
+                name="Trading Positions",
+                value=f"{len(data.positions)} open positions" if data.positions else "None",
+                inline=False,
+            )
 
-            # Voice activity
-            if data.voice and data.voice.total_minutes > 0:
-                embed.add_field(
-                    name="Voice Activity",
-                    value=(
-                        f"{data.voice.total_minutes} minutes recorded\n"
-                        f"Last seen: {data.voice.last_seen}\n"
-                        f"Most active day: {data.voice.peak_day}"
-                    ),
-                    inline=False,
-                )
-            else:
-                embed.add_field(name="Voice Activity", value="None", inline=False)
+            # Currency ledger (read-only - not deleted by /forget-me)
+            embed.add_field(
+                name="Currency Ledger",
+                value=(
+                    f"{len(data.ledger)} entries - see attached JSON file (permanent, cannot be erased)"
+                    if data.ledger
+                    else "None"
+                ),
+                inline=False,
+            )
+
+            voice_value = (
+                f"{data.voice.total_minutes} minutes recorded\n"
+                f"Last seen: {data.voice.last_seen}\n"
+                f"Most active day: {data.voice.peak_day}"
+                if data.voice and data.voice.total_minutes > 0
+                else "None"
+            )
+            embed.add_field(name="Voice Activity", value=voice_value, inline=False)
 
             embed.set_footer(text="Use /forget-me to request erasure of all data.")
             embed.timestamp = discord.utils.utcnow()
 
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            files = (
+                [
+                    discord.File(
+                        io.BytesIO(json.dumps([asdict(row) for row in data.ledger], indent=2).encode()),
+                        filename=f"ledger_{user_id}.json",
+                    ),
+                ]
+                if data.ledger
+                else []
+            )
+            await interaction.followup.send(embed=embed, files=files, ephemeral=True)
             log.info("User %s requested data export", user_id)
 
         except Exception:

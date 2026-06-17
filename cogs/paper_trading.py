@@ -1,6 +1,5 @@
-from __future__ import annotations  # Defer type annotation evaluation
-
 import logging
+from operator import itemgetter
 from typing import TYPE_CHECKING, Final
 
 # Discord Imports
@@ -403,7 +402,7 @@ class PaperTradingCog(GuildOnlyHybridCog):
             # Sort by timestamp
             sorted_positions = sorted(
                 portfolio_data["positions"],
-                key=lambda x: x["timestamp"],
+                key=itemgetter("timestamp"),
             )
 
             for pos in sorted_positions:
@@ -521,9 +520,11 @@ All are leveraged ETFs and are intended for short-term trading.",
                     # Notify the user via DM
                     user = self.bot.get_user(user_id)
                     if user:
+                        guild = self.bot.get_guild(guild_id)
+                        guild_name = guild.name if guild else f"guild {guild_id}"
                         await user.send(
                             f"⚠️ **Margin Call!**\n"
-                            f"Your {ticker} position (ID: {pos_id}) was automatically liquidated "
+                            f"Your {ticker} position (ID: {pos_id}) in **{guild_name}** was automatically liquidated "
                             f"as its losses (${pnl:,.2f}) met or exceeded your collateral.\n"
                             f"Realized P&L: **${pnl_final:,.2f}**",
                         )

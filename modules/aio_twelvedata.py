@@ -118,7 +118,7 @@ class AioTwelveDataClient:
                 method,
                 url,
                 params=req_params,
-                timeout=10,
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 # Check for HTTP errors first
                 # Special case: 401 usually means bad API key, treat as config error

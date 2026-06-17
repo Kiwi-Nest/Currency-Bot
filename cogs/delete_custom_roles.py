@@ -6,7 +6,7 @@ import discord
 from discord.ext import commands, tasks
 
 from modules.dtypes import GuildId
-from modules.security_utils import check_bot_hierarchy, check_verifiable_role
+from modules.security_utils import check_verified_role_manageable
 
 if TYPE_CHECKING:
     from modules.BotCore import BotCore
@@ -68,25 +68,9 @@ class RolePrunerCog(commands.Cog):
 
             # Prune the identified roles
             for role in roles_to_prune:
-                safe_result = check_verifiable_role(role)
-                hierarchy_result = check_bot_hierarchy(guild, role)
-
-                if not safe_result.ok:
-                    log.warning(
-                        "Skipping deletion of role '%s' in %s: %s",
-                        role.name,
-                        guild.name,
-                        safe_result.reason,
-                    )
-                    continue
-
-                if not hierarchy_result.ok:
-                    log.warning(
-                        "Skipping deletion of role '%s' in %s: %s",
-                        role.name,
-                        guild.name,
-                        hierarchy_result.reason,
-                    )
+                result = check_verified_role_manageable(guild, role)
+                if not result.ok:
+                    log.warning("Skipping deletion of role '%s' in %s: %s", role.name, guild.name, result.reason)
                     continue
 
                 try:
@@ -121,5 +105,5 @@ class RolePrunerCog(commands.Cog):
 
 async def setup(bot: BotCore) -> None:
     """Add the cog to the bot."""
-    # RolePrunerCog is now stateless and will fetch config per guild.
+    # RolePrunerCog is stateless and fetches config per guild.
     await bot.add_cog(RolePrunerCog(bot, config_db=bot.config_db))

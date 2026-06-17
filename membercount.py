@@ -25,7 +25,7 @@ except KeyError as e:
     msg = f"Error: Missing required environment variable: {e}"
     raise SystemExit(msg) from e
 
-TARGET_BOT_IDS = frozenset([CARL_BOT_ID, KIWI_BOT_ID])
+TARGET_BOT_IDS = frozenset({CARL_BOT_ID, KIWI_BOT_ID})
 TARGET_TIMEZONE = os.environ.get("TARGET_TIMEZONE", "Pacific/Auckland")
 API_URL = f"https://discord.com/api/v10/channels/{CHANNEL_ID}/messages"
 
@@ -86,7 +86,7 @@ def parse_member_events(
         title = embed.get("title", "").lower()
         date = datetime.fromisoformat(msg["timestamp"]).astimezone(tz)
 
-        if title.lower() == "member joined":
+        if title == "member joined":
             try:
                 suffix = embed.get("description", "").split("> ", 1)[-1]
                 if author_id == CARL_BOT_ID:
@@ -99,7 +99,7 @@ def parse_member_events(
             except ValueError, IndexError:
                 continue  # Skip malformed embeds
 
-        elif "member left" in title.lower() and count > 0:
+        elif "member left" in title and count > 0:
             count -= 1
             yield (date, count)
 

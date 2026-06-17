@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import discord
 from discord.ext import commands, tasks
 
-from modules.dtypes import GuildId, UserGuildPair, UserId
+from modules.dtypes import GuildId, Member, UserId
 
 if TYPE_CHECKING:
     from modules.BotCore import BotCore
@@ -19,7 +19,7 @@ class Activity(commands.Cog):
     def __init__(self, bot: BotCore, *, user_db: UserDB) -> None:
         self.bot = bot
         self.user_db = user_db
-        self.activity_cache: set[UserGuildPair] = set()
+        self.activity_cache: set[Member] = set()
         self.flush_activity_cache.start()
 
     async def cog_unload(self) -> None:
@@ -31,7 +31,7 @@ class Activity(commands.Cog):
         if user.bot:
             return
 
-        self.activity_cache.add((UserId(user.id), guild_id))
+        self.activity_cache.add(Member(UserId(user.id), guild_id))
         log.debug("Cached activity for user %d in guild %d", user.id, guild_id)
         if isinstance(user, discord.Member):
             self.bot.dispatch("user_activity", user)
@@ -162,7 +162,7 @@ class Activity(commands.Cog):
             return
 
         # We need to know which guilds to log to *before* we clear the cache
-        guild_ids_in_batch = {guild_id for _, guild_id in self.activity_cache}
+        guild_ids_in_batch = {m.guild_id for m in self.activity_cache}
 
         # Create a copy to avoid race conditions if new activity comes in
         # while the database operation is running.

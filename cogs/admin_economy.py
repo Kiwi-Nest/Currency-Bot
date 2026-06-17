@@ -5,7 +5,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modules.dtypes import GuildId, GuildInteraction, NonNegativeInt, PositiveInt, UserId
+from modules.dtypes import GuildId, GuildInteraction, Member, NonNegativeInt, PositiveInt, UserId
 from modules.errors import InsufficientFunds
 from modules.exceptions import UserError
 from modules.guild_cog import GuildOnlyHybridCog
@@ -85,9 +85,9 @@ class AdminEconomy(
 
         # Fail silently if we can't log, as the action itself succeeded
         with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-            await mod_channel.send(embed=embed, allowed_mentions=None)
+            await mod_channel.send(embed=embed)
 
-    @app_commands.command(name="set", description="Set a user's exact cash balance.")
+    @app_commands.command(name="set", description="Set a user's exact cash balance.")  # ty: ignore[invalid-argument-type]
     async def set_balance(
         self,
         interaction: GuildInteraction,
@@ -96,8 +96,7 @@ class AdminEconomy(
     ) -> None:
         """Set a user's balance to a specific amount."""
         await self.user_db.set_currency_balance_and_log(
-            UserId(member.id),
-            GuildId(interaction.guild.id),
+            Member(UserId(member.id), GuildId(interaction.guild.id)),
             NonNegativeInt(amount),
             "ADMIN_SET",
             self.ledger_db,
@@ -113,7 +112,7 @@ class AdminEconomy(
         )
         await interaction.response.send_message(f"✅ Set {member.mention}'s balance to ${amount:,}.")
 
-    @app_commands.command(name="mint", description="Print money for a user.")
+    @app_commands.command(name="mint", description="Print money for a user.")  # ty: ignore[invalid-argument-type]
     async def mint(
         self,
         interaction: GuildInteraction,
@@ -122,8 +121,7 @@ class AdminEconomy(
     ) -> None:
         """Mint new currency for a user."""
         new_bal = await self.user_db.mint_currency(
-            UserId(member.id),
-            GuildId(interaction.guild.id),
+            Member(UserId(member.id), GuildId(interaction.guild.id)),
             PositiveInt(amount),
             "ADMIN_MINT",
             self.ledger_db,
@@ -142,7 +140,7 @@ class AdminEconomy(
             f"✅ Minted ${amount:,} for {member.mention}. New Balance: ${new_bal:,}",
         )
 
-    @app_commands.command(name="burn", description="Destroy money from a user.")
+    @app_commands.command(name="burn", description="Destroy money from a user.")  # ty: ignore[invalid-argument-type]
     async def burn(
         self,
         interaction: GuildInteraction,
@@ -151,8 +149,7 @@ class AdminEconomy(
     ) -> None:
         """Burn currency from a user."""
         match await self.user_db.burn_currency(
-            UserId(member.id),
-            GuildId(interaction.guild.id),
+            Member(UserId(member.id), GuildId(interaction.guild.id)),
             PositiveInt(amount),
             "ADMIN_REMOVE",
             self.ledger_db,
@@ -175,7 +172,7 @@ class AdminEconomy(
                     f"🔥 Burned ${amount:,} from {member.mention}. New Balance: ${new_bal:,}",
                 )
 
-    @app_commands.command(
+    @app_commands.command(  # ty: ignore[invalid-argument-type]
         name="wealth-tax",
         description="Apply a progressive tax (val^x) to Cash AND Stocks.",
     )

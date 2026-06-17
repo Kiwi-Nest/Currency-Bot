@@ -1,156 +1,149 @@
 """Manage user-specific data and preferences in the database.
 
-The `users` table is the single source of truth for all user-specific data,
-including stats (currency, bumps, XP), preferences (reminders, opt-outs),
-and state (daily claims, activity). The schema is defined with strict
-constraints and generated columns to enforce data integrity.
+The `users` table stores person-level prefs (timezone, native_language, autotranslate).
+The `memberships` table stores per-guild state (currency, xp, bumps, level, etc.).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from typing import TYPE_CHECKING, ClassVar
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # Added for timezone support
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from modules.CurrencyLedgerDB import COLLATERAL_POOL_ID, SYSTEM_USER_ID
+from modules.Database import scalar_or, snowflake
 from modules.dtypes import (
     GuildId,
+    Member,
     NonNegativeInt,
     PositiveInt,
     ReminderPreference,
-    UserGuildPair,
     UserId,
 )
-from modules.enums import StatName
 from modules.errors import BurnError, InsufficientFunds, SelfTransfer, TransferError
 from modules.result import Err, Ok, Result
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from modules.CurrencyLedgerDB import CurrencyLedgerDB, EventReason
-    from modules.Database import Database
+    from modules.CurrencyLedgerDB import CurrencyLedgerDB, EventReason, EventType
+    from modules.Database import Database, WriteTx
+    from modules.enums import PlainStat, StatName
 
 
-# False S608: CURRENCY_TABLE is a constant, not user input. And stat.value is enum.
+# False S608: table names are constants/enums, not user input.
 class UserDB:
     USERS_TABLE: ClassVar[str] = "users"
+    MEMBERSHIPS_TABLE: ClassVar[str] = "memberships"
 
     def __init__(self, database: Database) -> None:
         self.database = database
         self.log = logging.getLogger(__name__)
 
     async def post_init(self) -> None:
-        """Initialize the database table for users."""
+        """Initialize user and membership tables."""
         async with self.database.get_conn() as conn:
-            # CHECK > 1000000 for snowflakes
-            await conn.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {self.USERS_TABLE} (
-                    -- Core Identity
-                    discord_id                  INTEGER NOT NULL CHECK(discord_id > 1000000 AND
-                                                    discord_id < 10000000000000000000),
-                    guild_id                    INTEGER NOT NULL CHECK(guild_id > 1000000 AND
-                                                    guild_id < 10000000000000000000),
-
-                    -- Stats (from former user_stats table)
-                    currency                    INTEGER NOT NULL DEFAULT 0 CHECK(currency >= 0),
-                    bumps                       INTEGER NOT NULL DEFAULT 0 CHECK(bumps >= 0),
-                    xp                          INTEGER NOT NULL DEFAULT 0 CHECK(xp >= 0),
-
-                    -- Generated Level Column
-                    level                       INTEGER GENERATED ALWAYS AS
-                                                (CAST(floor(pow(max(xp - 6, 0), 1.0/2.5)) AS INTEGER))
-                    STORED,
-
-                    -- Preferences & State
-                    last_active_timestamp       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now')),
-                    daily_reminder_preference   TEXT NOT NULL DEFAULT 'NEVER'
-                    CHECK(daily_reminder_preference IN ('NEVER', 'ONCE', 'ALWAYS')),
-
-                    has_claimed_daily           INTEGER NOT NULL DEFAULT 0 CHECK(has_claimed_daily IN (0, 1)),
-                    native_language             TEXT DEFAULT NULL,
-                    autotranslate               INTEGER NOT NULL DEFAULT 0 CHECK(autotranslate IN (0, 1)),
-                    timezone                    TEXT DEFAULT 'UTC',
-
-                    -- Keys & Constraints
-                    PRIMARY KEY (discord_id, guild_id)
-                ) STRICT;
-                """,
-            )
-            # Add an index for guild_id and last_active_timestamp to speed up activity queries.
-            await conn.execute(
-                f"""
-                CREATE INDEX IF NOT EXISTS idx_users_activity ON {self.USERS_TABLE}(guild_id, last_active_timestamp);
-                """,
-            )
-            # Create a partial index to optimize fetching users who need a daily reminder.
             await conn.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_users_pending_reminders
-                ON users(guild_id)
-                WHERE daily_reminder_preference IN ('ALWAYS', 'ONCE');
+                CREATE TABLE IF NOT EXISTS users (
+                    discord_id      INTEGER PRIMARY KEY,
+                    timezone        TEXT NOT NULL DEFAULT 'UTC',
+                    native_language TEXT DEFAULT NULL,
+                    autotranslate   INTEGER NOT NULL DEFAULT 0 CHECK(autotranslate IN (0,1))
+                ) STRICT
                 """,
             )
-            # Invariant: Bumps are append-only.
             await conn.execute(
                 f"""
+                CREATE TABLE IF NOT EXISTS memberships (
+                    discord_id               INTEGER NOT NULL REFERENCES users(discord_id)
+                                                 ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+                    guild_id                 INTEGER NOT NULL {snowflake("guild_id")},
+                    currency                 INTEGER NOT NULL DEFAULT 0 CHECK(currency >= 0),
+                    bumps                    INTEGER NOT NULL DEFAULT 0 CHECK(bumps >= 0),
+                    xp                       INTEGER NOT NULL DEFAULT 0 CHECK(xp >= 0),
+                    level                    INTEGER GENERATED ALWAYS AS
+                                                 (CAST(floor(pow(max(xp-6,0),1.0/2.5)) AS INTEGER)) STORED,
+                    last_active_timestamp    INTEGER NOT NULL DEFAULT (unixepoch()),
+                    daily_reminder_preference TEXT NOT NULL DEFAULT 'NEVER'
+                                                 CHECK(daily_reminder_preference IN ('NEVER','ONCE','ALWAYS')),
+                    has_claimed_daily        INTEGER NOT NULL DEFAULT 0 CHECK(has_claimed_daily IN (0,1)),
+                    PRIMARY KEY (discord_id, guild_id)
+                ) STRICT, WITHOUT ROWID
+                """,
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memberships_activity ON memberships(guild_id, last_active_timestamp)",
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memberships_pending_reminders ON memberships(guild_id) WHERE daily_reminder_preference IN ('ALWAYS','ONCE')",  # noqa: E501
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memberships_currency ON memberships(guild_id, currency DESC)",
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memberships_xp ON memberships(guild_id, xp DESC)",
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memberships_bumps ON memberships(guild_id, bumps DESC)",
+            )
+            await conn.execute(
+                """
                 CREATE TRIGGER IF NOT EXISTS prevent_bump_decrement
-                BEFORE UPDATE ON {self.USERS_TABLE}
+                BEFORE UPDATE ON memberships
                 WHEN NEW.bumps < OLD.bumps
                 BEGIN
                     SELECT RAISE(ABORT, 'Bump count cannot be decreased');
-                END;
+                END
                 """,
             )
-            # Create a view for user stats to abstract the underlying table.
             await conn.execute(
                 """
                 CREATE VIEW IF NOT EXISTS v_user_stats AS
-                SELECT
-                    discord_id,
-                    guild_id,
-                    currency,
-                    bumps,
-                    xp,
-                    level
-                FROM users;
+                SELECT discord_id, guild_id, currency, bumps, xp, level
+                FROM memberships
                 """,
             )
             await conn.commit()
 
-    async def update_last_message(self, user_id: UserId, guild_id: GuildId) -> None:
+    async def update_last_message(self, member: Member) -> None:
         """Update the timestamp of the last message for a user."""
         async with self.database.get_conn() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {self.USERS_TABLE} (discord_id, guild_id)
-                VALUES (?, ?)
+                "INSERT OR IGNORE INTO users(discord_id) VALUES (?)",
+                (member.user_id,),
+            )
+            await conn.execute(
+                """
+                INSERT INTO memberships (discord_id, guild_id) VALUES (?, ?)
                 ON CONFLICT(discord_id, guild_id) DO UPDATE SET
-                last_active_timestamp = strftime('%Y-%m-%d %H:%M:%S', 'now')
-                """,  # noqa: S608
-                (user_id, guild_id),
+                    last_active_timestamp = unixepoch()
+                """,
+                (member.user_id, member.guild_id),
             )
             await conn.commit()
 
     async def set_daily_reminder_preference(
         self,
-        user_id: UserId,
+        member: Member,
         preference: ReminderPreference,
-        guild_id: GuildId,
     ) -> None:
-        """Set the daily reminder preference ('ONCE', 'ALWAYS', 'NEVER') for a user."""
+        """Set the daily reminder preference for a user."""
         async with self.database.get_conn() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, daily_reminder_preference)
+                "INSERT OR IGNORE INTO users(discord_id) VALUES (?)",
+                (member.user_id,),
+            )
+            await conn.execute(
+                """
+                INSERT INTO memberships (discord_id, guild_id, daily_reminder_preference)
                 VALUES (?, ?, ?)
                 ON CONFLICT(discord_id, guild_id) DO UPDATE SET
-                daily_reminder_preference = excluded.daily_reminder_preference,
-                last_active_timestamp = excluded.last_active_timestamp
-                """,  # noqa: S608
-                (user_id, guild_id, preference),
+                    daily_reminder_preference = excluded.daily_reminder_preference
+                """,
+                (member.user_id, member.guild_id, preference),
             )
             await conn.commit()
 
@@ -159,421 +152,347 @@ class UserDB:
         ids = list(user_ids)
         if not ids:
             return
-        placeholders = ",".join("?" * len(ids))
         async with self.database.get_conn() as conn:
             await conn.execute(
-                f"""
-                UPDATE {self.USERS_TABLE}
+                """
+                UPDATE memberships
                 SET daily_reminder_preference = 'NEVER'
-                WHERE discord_id IN ({placeholders})
+                WHERE discord_id IN (SELECT value FROM json_each(?))
                   AND daily_reminder_preference != 'NEVER'
-                """,  # noqa: S608
-                ids,
+                """,
+                (json.dumps(ids),),
             )
             await conn.commit()
 
     async def get_active_users(self, guild_id: GuildId, days: int) -> list[UserId]:
-        """Get a list of user IDs that have been active within a specified number of days."""
+        """Get user IDs active within the specified number of days."""
         async with self.database.get_cursor() as cursor:
             await cursor.execute(
-                f"""
-                SELECT discord_id FROM {self.USERS_TABLE}
-                WHERE guild_id = ? AND julianday('now') - julianday(last_active_timestamp) <= ?
-                """,  # noqa: S608
+                """
+                SELECT discord_id FROM memberships
+                WHERE guild_id = ? AND (unixepoch() - last_active_timestamp) <= ? * 86400
+                """,
                 (guild_id, days),
             )
-            active_users = await cursor.fetchall()
-        return [UserId(row[0]) for row in active_users]
+            rows = await cursor.fetchall()
+        return [UserId(row[0]) for row in rows]
 
-    async def get_inactive_users(self, guild_id: GuildId, days: int) -> list[UserId]:
-        """Get a list of user IDs that have been inactive for more than a specified number of days."""
+    async def get_all_users(self, guild_id: GuildId) -> list[UserId]:
+        """Return all user IDs known for a guild."""
         async with self.database.get_cursor() as cursor:
             await cursor.execute(
-                f"""
-                SELECT discord_id FROM {self.USERS_TABLE}
-                WHERE guild_id = ? AND julianday('now') - julianday(last_active_timestamp) > ?
-                """,  # noqa: S608
-                (guild_id, days),
+                "SELECT discord_id FROM memberships WHERE guild_id = ?",
+                (guild_id,),
             )
-            inactive_users = await cursor.fetchall()
-        return [UserId(row[0]) for row in inactive_users]
+            rows = await cursor.fetchall()
+        return [UserId(row[0]) for row in rows]
 
-    async def update_active_users(self, user_guild_pairs: list[UserGuildPair]) -> None:
-        """Bulk update the last active timestamp for a list of users."""
-        if not user_guild_pairs:
-            return
-
+    async def set_last_active(self, member: Member, timestamp: int) -> None:
+        """Upsert a user row with an explicit epoch last_active_timestamp."""
         async with self.database.get_conn() as conn:
-            await conn.executemany(
-                f"""
-                INSERT INTO {self.USERS_TABLE} (discord_id, guild_id) VALUES (?, ?)
+            await conn.execute(
+                "INSERT OR IGNORE INTO users(discord_id) VALUES (?)",
+                (member.user_id,),
+            )
+            await conn.execute(
+                """
+                INSERT INTO memberships (discord_id, guild_id, last_active_timestamp)
+                VALUES (?, ?, ?)
                 ON CONFLICT(discord_id, guild_id) DO UPDATE SET
-                    last_active_timestamp = strftime('%Y-%m-%d %H:%M:%S', 'now')
-                """,  # noqa: S608
-                user_guild_pairs,
+                    last_active_timestamp = excluded.last_active_timestamp
+                """,
+                (member.user_id, member.guild_id, timestamp),
             )
             await conn.commit()
 
-    async def attempt_daily_claim(self, user_id: UserId, guild_id: GuildId) -> bool:
-        """Atomically attempt to claim a daily reward for a user.
+    async def get_inactive_users(self, guild_id: GuildId, days: int) -> list[UserId]:
+        """Get user IDs inactive for more than the specified number of days."""
+        async with self.database.get_cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT discord_id FROM memberships
+                WHERE guild_id = ? AND (unixepoch() - last_active_timestamp) > ? * 86400
+                """,
+                (guild_id, days),
+            )
+            rows = await cursor.fetchall()
+        return [UserId(row[0]) for row in rows]
 
-        This method ensures a user is in the database and then tries to update
-        their `has_claimed_daily` status from 0 to 1. This is done in a single
-        transaction to prevent race conditions.
+    async def get_users_last_active(self, guild_id: GuildId, user_ids: set[UserId]) -> list[tuple[UserId, int]]:
+        """Return (user_id, last_active_timestamp) for each given user ID in the guild."""
+        if not user_ids:
+            return []
+        async with self.database.get_cursor() as cursor:
+            await cursor.execute(
+                """
+                SELECT discord_id, last_active_timestamp FROM memberships
+                WHERE guild_id = ? AND discord_id IN (SELECT value FROM json_each(?))
+                """,
+                (guild_id, json.dumps(list(user_ids))),
+            )
+            rows = await cursor.fetchall()
+        return [(UserId(row[0]), int(row[1])) for row in rows]
 
-        Returns
-        -------
-            bool: True if the claim was successful, False if already claimed.
-
-        """
+    async def update_active_users(self, members: list[Member]) -> None:
+        """Bulk update the last active timestamp for a list of users."""
+        if not members:
+            return
         async with self.database.get_conn() as conn:
-            # This single atomic operation ensures the user exists, then attempts
-            # to update the claim status only if `has_claimed_daily` is 0.
+            await conn.executemany(
+                "INSERT OR IGNORE INTO users(discord_id) VALUES (?)",
+                [(m.user_id,) for m in members],
+            )
+            await conn.executemany(
+                """
+                INSERT INTO memberships (discord_id, guild_id) VALUES (?, ?)
+                ON CONFLICT(discord_id, guild_id) DO UPDATE SET
+                    last_active_timestamp = unixepoch()
+                """,
+                [(m.user_id, m.guild_id) for m in members],
+            )
+            await conn.commit()
+
+    async def attempt_daily_claim(self, member: Member) -> bool:
+        """Atomically attempt to claim a daily reward. Returns True if successful."""
+        async with self.database.get_conn() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO users(discord_id) VALUES (?)",
+                (member.user_id,),
+            )
             cursor = await conn.execute(
-                f"""
-                INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, has_claimed_daily) VALUES (?, ?, 1)
+                """
+                INSERT INTO memberships (discord_id, guild_id, has_claimed_daily) VALUES (?, ?, 1)
                 ON CONFLICT(discord_id, guild_id) DO UPDATE SET
                     has_claimed_daily = 1
-                WHERE {self.USERS_TABLE}.has_claimed_daily = 0
-                """,  # noqa: S608
-                (user_id, guild_id),
+                WHERE memberships.has_claimed_daily = 0
+                """,
+                (member.user_id, member.guild_id),
             )
             await conn.commit()
             return cursor.rowcount == 1
 
     async def process_daily_reset_for_guild(self, guild_id: GuildId) -> list[UserId]:
-        """Atomically reset all daily claims and fetch users who need a reminder.
-
-        This is currently dead code but remains separate to leave room for different timezones per server.
-
-        This single transaction performs three actions:
-        1. Fetches all users who have not claimed their daily and have reminders enabled.
-        2. Resets `has_claimed_daily` to 0 for ALL users.
-        3. Resets `daily_reminder_preference` to 'NEVER' for users who had it set to 'ONCE'.
-
-        Returns
-        -------
-            A list of user IDs to be reminded.
-
-        """
+        """Atomically reset all daily claims and fetch users who need a reminder."""
         async with self.database.get_conn() as conn:
-            # 1. Fetch users who need a reminder BEFORE resetting claims.
             cursor = await conn.execute(
-                f"""
-                SELECT discord_id FROM {self.USERS_TABLE}
+                """
+                SELECT discord_id FROM memberships
                 WHERE guild_id = ? AND daily_reminder_preference IN ('ALWAYS', 'ONCE')
-                """,  # noqa: S608
+                """,
                 (guild_id,),
             )
             user_ids_to_remind = [UserId(row[0]) for row in await cursor.fetchall()]
-
-            # 2. Atomically reset daily claims and 'ONCE' preferences for all users.
             await conn.execute(
-                f"""
-                UPDATE {self.USERS_TABLE} SET
+                """
+                UPDATE memberships SET
                     has_claimed_daily = 0,
                     daily_reminder_preference = CASE
                         WHEN daily_reminder_preference = 'ONCE' THEN 'NEVER'
                         ELSE daily_reminder_preference END
                 WHERE guild_id = ?
-                """,  # noqa: S608
+                """,
                 (guild_id,),
             )
             await conn.commit()
             return user_ids_to_remind
 
     async def process_daily_reset_all(self) -> list[UserId]:
-        """Atomically reset all daily claims across all guilds and fetch users who need a reminder.
-
-        This single transaction performs three actions for the entire database:
-        1. Fetches all users who have not claimed their daily and have reminders enabled.
-        2. Resets `has_claimed_daily` to 0 for ALL users.
-        3. Resets `daily_reminder_preference` to 'NEVER' for users who had it set to 'ONCE'.
-
-        Returns
-        -------
-            A list of user IDs to be reminded.
-
-        """
+        """Atomically reset all daily claims across all guilds and fetch users who need a reminder."""
         async with self.database.get_conn() as conn:
-            # 1. Fetch all users who need a reminder from any guild.
             cursor = await conn.execute(
-                f"""
-                SELECT DISTINCT discord_id FROM {self.USERS_TABLE}
+                """
+                SELECT DISTINCT discord_id FROM memberships
                 WHERE daily_reminder_preference IN ('ALWAYS', 'ONCE')
-                """,  # noqa: S608
+                """,
             )
             user_ids_to_remind = [UserId(row[0]) for row in await cursor.fetchall()]
-
-            # 2. Atomically reset daily claims and 'ONCE' preferences for all users.
             await conn.execute(
-                f"""
-                UPDATE {self.USERS_TABLE} SET
+                """
+                UPDATE memberships SET
                     has_claimed_daily = 0,
                     daily_reminder_preference = CASE
                         WHEN daily_reminder_preference = 'ONCE' THEN 'NEVER'
                         ELSE daily_reminder_preference END
-                """,  # noqa: S608
+                """,
             )
             await conn.commit()
             return user_ids_to_remind
 
     async def mint_currency(
         self,
-        user_id: UserId,
-        guild_id: GuildId,
+        member: Member,
         amount: PositiveInt,
         event_reason: EventReason,
         ledger_db: CurrencyLedgerDB,
         initiator_id: UserId | None = None,
     ) -> NonNegativeInt:
-        """Atomically increment a user's currency and logs it as a MINT event."""
-        sql = f"""
-            INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, currency)
-            VALUES (?, ?, ?)
-            ON CONFLICT(discord_id, guild_id) DO UPDATE SET
-                currency = currency + excluded.currency
-            RETURNING currency
-        """  # noqa: S608
-        async with self.database.get_conn() as conn:
-            try:
-                cursor = await conn.execute(sql, (user_id, guild_id, amount))
-                new_value_row = await cursor.fetchone()
-                await ledger_db.log_event(
-                    conn=conn,
-                    guild_id=guild_id,
-                    event_type="MINT",
-                    event_reason=event_reason,
-                    sender_id=SYSTEM_USER_ID,
-                    receiver_id=user_id,
-                    amount=amount,
-                    initiator_id=initiator_id or user_id,
-                )
-                await conn.commit()
-            except Exception:
-                await conn.rollback()
-                self.log.exception(
-                    "Currency minting failed and was rolled back for user %s",
-                    user_id,
-                )
-                # Re-raise or return a failure indicator
-                raise
-            return NonNegativeInt(int(new_value_row[0]) if new_value_row else 0)
+        """Atomically increment a user's currency and log it as a MINT event."""
+        async with self.database.transaction() as conn:
+            await conn.execute("INSERT OR IGNORE INTO users(discord_id) VALUES (?)", (member.user_id,))
+            cursor = await conn.execute(
+                """
+                INSERT INTO memberships (discord_id, guild_id, currency) VALUES (?, ?, ?)
+                ON CONFLICT(discord_id, guild_id) DO UPDATE SET
+                    currency = currency + excluded.currency
+                RETURNING currency
+                """,
+                (member.user_id, member.guild_id, amount),
+            )
+            new_value_row = await cursor.fetchone()
+            await ledger_db.log_event(
+                tx=conn,
+                guild_id=member.guild_id,
+                event_type="MINT",
+                event_reason=event_reason,
+                sender_id=SYSTEM_USER_ID,
+                receiver_id=member.user_id,
+                amount=amount,
+                initiator_id=initiator_id or member.user_id,
+            )
+        return NonNegativeInt(scalar_or(new_value_row, "currency", 0))
 
     async def burn_currency(
         self,
-        user_id: UserId,
-        guild_id: GuildId,
+        member: Member,
         amount: PositiveInt,
         event_reason: EventReason,
         ledger_db: CurrencyLedgerDB,
         initiator_id: UserId,
     ) -> Result[int, BurnError]:
-        """Atomically decrement a user's currency if they have sufficient funds.
+        """Atomically decrement currency if sufficient, log as BURN. Returns Ok(new_balance) or Err."""
+        async with self.database.transaction() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE memberships
+                SET currency = currency - ?
+                WHERE discord_id = ? AND guild_id = ? AND currency >= ?
+                RETURNING currency
+                """,
+                (amount, member.user_id, member.guild_id, amount),
+            )
+            new_value_row = await cursor.fetchone()
 
-        Logs it as a BURN event. Returns Ok(new_balance) or Err(InsufficientFunds).
-        """
-        sql = f"""
-            UPDATE {self.USERS_TABLE}
-            SET currency = currency - ?
-            WHERE discord_id = ? AND guild_id = ? AND currency >= ?
-            RETURNING currency
-        """  # noqa: S608
-        async with self.database.get_conn() as conn:
-            try:
-                cursor = await conn.execute(sql, (amount, user_id, guild_id, amount))
-                new_value_row = await cursor.fetchone()
-
-                if new_value_row is None:
-                    bal_cursor = await conn.execute(
-                        f"SELECT currency FROM {self.USERS_TABLE} WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
-                        (user_id, guild_id),
-                    )
-                    bal_row = await bal_cursor.fetchone()
-                    available = NonNegativeInt(bal_row[0] if bal_row else 0)
-                    await conn.rollback()
-                    return Err(InsufficientFunds(available=available, required=amount))
-
-                await ledger_db.log_event(
-                    conn=conn,
-                    guild_id=guild_id,
-                    event_type="BURN",
-                    event_reason=event_reason,
-                    sender_id=user_id,
-                    receiver_id=SYSTEM_USER_ID,  # Money goes to the void
-                    amount=amount,
-                    initiator_id=initiator_id,
+            if new_value_row is None:
+                bal_cursor = await conn.execute(
+                    "SELECT currency FROM memberships WHERE discord_id = ? AND guild_id = ?",
+                    (member.user_id, member.guild_id),
                 )
-
-                await conn.commit()
-                return Ok(int(new_value_row[0]))
-
-            except Exception:
+                available = NonNegativeInt(scalar_or(await bal_cursor.fetchone(), "currency", 0))
                 await conn.rollback()
-                self.log.exception(
-                    "Currency burning failed and was rolled back for user %s",
-                    user_id,
-                )
-                raise
+                return Err(InsufficientFunds(available=available, required=amount))
+
+            await ledger_db.log_event(
+                tx=conn,
+                guild_id=member.guild_id,
+                event_type="BURN",
+                event_reason=event_reason,
+                sender_id=member.user_id,
+                receiver_id=SYSTEM_USER_ID,
+                amount=amount,
+                initiator_id=initiator_id,
+            )
+            return Ok(scalar_or(new_value_row, "currency", 0))
 
     async def set_currency_balance_and_log(
         self,
-        user_id: UserId,
-        guild_id: GuildId,
+        member: Member,
         new_balance: NonNegativeInt,
-        event_reason: EventReason,  # e.g., "ADMIN_SET"
+        event_reason: EventReason,
         ledger_db: CurrencyLedgerDB,
         initiator_id: UserId,
     ) -> None:
-        """Atomically set a user's balance and logs the *delta* to the currency ledger as a MINT or BURN."""
-        async with self.database.get_conn() as conn:
-            try:
-                # 1. Get current balance (or 0) inside the transaction
-                cursor = await conn.execute(
-                    f"SELECT currency FROM {self.USERS_TABLE} WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
-                    (user_id, guild_id),
+        """Atomically set a user's balance and log the delta as MINT or BURN."""
+        async with self.database.transaction() as conn:
+            cursor = await conn.execute(
+                "SELECT currency FROM memberships WHERE discord_id = ? AND guild_id = ?",
+                (member.user_id, member.guild_id),
+            )
+            current_balance = scalar_or(await cursor.fetchone(), "currency", 0)
+            delta = new_balance - current_balance
+
+            await conn.execute("INSERT OR IGNORE INTO users(discord_id) VALUES (?)", (member.user_id,))
+            await conn.execute(
+                """
+                INSERT INTO memberships (discord_id, guild_id, currency) VALUES (?, ?, ?)
+                ON CONFLICT(discord_id, guild_id) DO UPDATE SET currency = excluded.currency
+                """,
+                (member.user_id, member.guild_id, new_balance),
+            )
+
+            if delta > 0:
+                await ledger_db.log_event(
+                    tx=conn,
+                    guild_id=member.guild_id,
+                    event_type="MINT",
+                    event_reason=event_reason,
+                    sender_id=SYSTEM_USER_ID,
+                    receiver_id=member.user_id,
+                    amount=delta,
+                    initiator_id=initiator_id,
                 )
-                row = await cursor.fetchone()
-                current_balance = int(row[0]) if row else 0
-
-                delta = new_balance - current_balance
-
-                # 2. Update the user's balance in the cache
-                await conn.execute(
-                    f"""
-                    INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, currency) VALUES (?, ?, ?)
-                    ON CONFLICT(discord_id, guild_id) DO UPDATE SET currency = excluded.currency
-                    """,  # noqa: S608
-                    (user_id, guild_id, new_balance),
+            elif delta < 0:
+                await ledger_db.log_event(
+                    tx=conn,
+                    guild_id=member.guild_id,
+                    event_type="BURN",
+                    event_reason=event_reason,
+                    sender_id=member.user_id,
+                    receiver_id=SYSTEM_USER_ID,
+                    amount=abs(delta),
+                    initiator_id=initiator_id,
                 )
 
-                # 3. Log the delta to the ledger
-                if delta > 0:
-                    # This was a MINT
-                    await ledger_db.log_event(
-                        conn=conn,
-                        guild_id=guild_id,
-                        event_type="MINT",
-                        event_reason=event_reason,
-                        sender_id=SYSTEM_USER_ID,
-                        receiver_id=user_id,
-                        amount=delta,
-                        initiator_id=initiator_id,
-                    )
-                elif delta < 0:
-                    # This was a BURN
-                    await ledger_db.log_event(
-                        conn=conn,
-                        guild_id=guild_id,
-                        event_type="BURN",
-                        event_reason=event_reason,
-                        sender_id=user_id,
-                        receiver_id=SYSTEM_USER_ID,
-                        amount=abs(delta),
-                        initiator_id=initiator_id,
-                    )
-                # if delta == 0, no change, nothing to log.
-
-                await conn.commit()
-
-            except Exception:
-                await conn.rollback()
-                self.log.exception(
-                    "Setting currency balance failed and was rolled back for user %s",
-                    user_id,
-                )
-                raise
-
-    async def get_stat(
-        self,
-        user_id: UserId,
-        guild_id: GuildId,
-        stat: StatName,
-    ) -> NonNegativeInt:
+    async def get_stat(self, member: Member, stat: StatName) -> NonNegativeInt:
         """Get a single stat for a user, returning 0 if they don't exist."""
         async with self.database.get_cursor() as cursor:
-            # The stat name is from an enum, so it's safe to use in an f-string.
             await cursor.execute(
-                f"SELECT {stat.value} FROM {self.USERS_TABLE} WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
-                (user_id, guild_id),
+                f"SELECT {stat.value} FROM memberships WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
+                (member.user_id, member.guild_id),
             )
             result = await cursor.fetchone()
-        return NonNegativeInt(int(result[0])) if result else NonNegativeInt(0)
+        return NonNegativeInt(scalar_or(result, stat.value, 0))
 
-    async def increment_stat(
-        self,
-        user_id: UserId,
-        guild_id: GuildId,
-        stat: StatName,
-        amount: PositiveInt,
-    ) -> NonNegativeInt:
-        """Atomically increments a user's stat and returns the new value."""
-        if stat == StatName.CURRENCY:
-            msg = "Cannot use increment_stat for currency. Use mint_currency instead."
-            raise PermissionError(msg)
-
-        # stat.value is 'currency', 'bumps', or 'xp' which we safely use to build the query
+    async def increment_stat(self, member: Member, stat: PlainStat, amount: PositiveInt) -> NonNegativeInt:
+        """Atomically increment a user's stat and return the new value."""
         sql = f"""
-            INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, {stat.value})
+            INSERT INTO memberships (discord_id, guild_id, {stat.value})
             VALUES (?, ?, ?)
             ON CONFLICT(discord_id, guild_id) DO UPDATE SET
                 {stat.value} = {stat.value} + excluded.{stat.value}
             RETURNING {stat.value}
         """  # noqa: S608
-
         async with self.database.get_conn() as conn:
-            cursor = await conn.execute(sql, (user_id, guild_id, amount))
+            await conn.execute("INSERT OR IGNORE INTO users(discord_id) VALUES (?)", (member.user_id,))
+            cursor = await conn.execute(sql, (member.user_id, member.guild_id, amount))
             new_value_row = await cursor.fetchone()
             await conn.commit()
+        return NonNegativeInt(scalar_or(new_value_row, stat.value, 0))
 
-        return NonNegativeInt(int(new_value_row[0]) if new_value_row else 0)
-
-    async def decrement_stat(
-        self,
-        user_id: UserId,
-        guild_id: GuildId,
-        stat: StatName,
-        amount: PositiveInt,
-    ) -> int | None:
-        """Atomically decrements a user's stat if they have sufficient value."""
-        if stat == StatName.CURRENCY:
-            msg = "Cannot use decrement_stat for currency. Use burn_currency instead."
-            raise PermissionError(msg)
-
+    async def decrement_stat(self, member: Member, stat: PlainStat, amount: PositiveInt) -> int | None:
+        """Atomically decrement a user's stat if they have sufficient value."""
         sql = f"""
-            UPDATE {self.USERS_TABLE}
+            UPDATE memberships
             SET {stat.value} = {stat.value} - ?
             WHERE discord_id = ? AND guild_id = ? AND {stat.value} >= ?
             RETURNING {stat.value}
         """  # noqa: S608
-
         async with self.database.get_conn() as conn:
-            cursor = await conn.execute(sql, (amount, user_id, guild_id, amount))
+            cursor = await conn.execute(sql, (amount, member.user_id, member.guild_id, amount))
             new_value_row = await cursor.fetchone()
             await conn.commit()
+        return scalar_or(new_value_row, stat.value, None)
 
-        return int(new_value_row[0]) if new_value_row else None
-
-    async def set_stat(
-        self,
-        user_id: UserId,
-        guild_id: GuildId,
-        stat: StatName,
-        value: int,
-    ) -> None:
-        """Atomically sets a user's stat to a specific value."""
-        if stat == StatName.CURRENCY:
-            msg = "Cannot use set_stat for currency. Use set_currency_balance_and_log instead."
-            raise PermissionError(msg)
-
+    async def set_stat(self, member: Member, stat: PlainStat, value: int) -> None:
+        """Atomically set a user's stat to a specific value."""
         sql = f"""
-            INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, {stat.value})
+            INSERT INTO memberships (discord_id, guild_id, {stat.value})
             VALUES (?, ?, ?)
             ON CONFLICT(discord_id, guild_id) DO UPDATE SET
                 {stat.value} = excluded.{stat.value}
         """  # noqa: S608
         async with self.database.get_conn() as conn:
-            await conn.execute(sql, (user_id, guild_id, value))
+            await conn.execute("INSERT OR IGNORE INTO users(discord_id) VALUES (?)", (member.user_id,))
+            await conn.execute(sql, (member.user_id, member.guild_id, value))
             await conn.commit()
 
     async def transfer_currency(
@@ -584,61 +503,44 @@ class UserDB:
         amount: PositiveInt,
         ledger_db: CurrencyLedgerDB,
     ) -> Result[None, TransferError]:
-        """Atomically transfers currency and logs the transaction."""
+        """Atomically transfer currency and log the transaction."""
         if sender_id == receiver_id:
             return Err(SelfTransfer())
 
-        async with self.database.get_conn() as conn:
-            try:
-                # 1. Check sender's balance and decrement in one atomic step
-                cursor = await conn.execute(
-                    f"""UPDATE {self.USERS_TABLE} SET currency = currency - ?
-                    WHERE discord_id = ? AND guild_id = ? AND currency >= ?""",  # noqa: S608
-                    (amount, sender_id, guild_id, amount),
+        async with self.database.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE memberships SET currency = currency - ?
+                WHERE discord_id = ? AND guild_id = ? AND currency >= ?""",
+                (amount, sender_id, guild_id, amount),
+            )
+            if cursor.rowcount == 0:
+                bal_cursor = await conn.execute(
+                    "SELECT currency FROM memberships WHERE discord_id = ? AND guild_id = ?",
+                    (sender_id, guild_id),
                 )
-                if cursor.rowcount == 0:
-                    bal_cursor = await conn.execute(
-                        f"SELECT currency FROM {self.USERS_TABLE} WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
-                        (sender_id, guild_id),
-                    )
-                    bal_row = await bal_cursor.fetchone()
-                    available = NonNegativeInt(bal_row[0] if bal_row else 0)
-                    await conn.rollback()
-                    return Err(InsufficientFunds(available=available, required=amount))
-
-                # 2. Increment receiver's balance (UPSERT to be safe)
-                await conn.execute(
-                    f"""
-                    INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, currency) VALUES (?, ?, ?)
-                    ON CONFLICT(discord_id, guild_id) DO UPDATE SET currency = currency + excluded.currency
-                    """,  # noqa: S608
-                    (receiver_id, guild_id, amount),
-                )
-
-                # 3. Log the transaction to the new ledger
-                await ledger_db.log_event(
-                    conn=conn,
-                    guild_id=guild_id,
-                    event_type="TRANSFER",
-                    event_reason="P2P_TRANSFER",
-                    sender_id=sender_id,
-                    receiver_id=receiver_id,
-                    amount=amount,
-                    initiator_id=sender_id,
-                )
-
-                await conn.commit()
-            except Exception:
+                available = NonNegativeInt(scalar_or(await bal_cursor.fetchone(), "currency", 0))
                 await conn.rollback()
-                self.log.exception(
-                    "Currency transfer failed and was rolled back. From %s to %s, amount %d",
-                    sender_id,
-                    receiver_id,
-                    amount,
-                )
-                raise
-            else:
-                return Ok(None)
+                return Err(InsufficientFunds(available=available, required=amount))
+
+            await conn.execute("INSERT OR IGNORE INTO users(discord_id) VALUES (?)", (receiver_id,))
+            await conn.execute(
+                """
+                INSERT INTO memberships (discord_id, guild_id, currency) VALUES (?, ?, ?)
+                ON CONFLICT(discord_id, guild_id) DO UPDATE SET currency = currency + excluded.currency
+                """,
+                (receiver_id, guild_id, amount),
+            )
+            await ledger_db.log_event(
+                tx=conn,
+                guild_id=guild_id,
+                event_type="TRANSFER",
+                event_reason="P2P_TRANSFER",
+                sender_id=sender_id,
+                receiver_id=receiver_id,
+                amount=amount,
+                initiator_id=sender_id,
+            )
+            return Ok(None)
 
     async def get_leaderboard(
         self,
@@ -648,7 +550,6 @@ class UserDB:
     ) -> list[tuple[int, UserId, int]]:
         """Retrieve the top users by a stat."""
         query_stat = stat.value
-
         async with self.database.get_cursor() as cursor:
             await cursor.execute(
                 f"""
@@ -665,16 +566,12 @@ class UserDB:
             rows = await cursor.fetchall()
             return [(row[0], UserId(row[1]), row[2]) for row in rows]
 
-    async def get_level_and_xp(
-        self,
-        user_id: UserId,
-        guild_id: GuildId,
-    ) -> tuple[int, int] | None:
+    async def get_level_and_xp(self, member: Member) -> tuple[int, int] | None:
         """Fetch the level and XP for a user."""
         async with self.database.get_cursor() as cursor:
             await cursor.execute(
-                f"SELECT level, xp FROM {self.USERS_TABLE} WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
-                (user_id, guild_id),
+                "SELECT level, xp FROM memberships WHERE discord_id = ? AND guild_id = ?",
+                (member.user_id, member.guild_id),
             )
             return await cursor.fetchone()
 
@@ -685,32 +582,26 @@ class UserDB:
         ledger_db: CurrencyLedgerDB,
         initiator_id: UserId,
     ) -> tuple[int, int]:
-        """Apply a progressive wealth tax (val^x) to all users' cash and stock collateral.
+        """Apply a progressive wealth tax to all users' cash and stock collateral.
 
-        Returns:
-            tuple[int, int]: (count_of_users_affected, total_amount_burned)
-
+        Returns (count_of_users_affected, total_amount_burned).
         """
         total_burned = 0
         affected_users = set()
         ledger_events = []
-
-        # We will perform updates in batches
         cash_updates = []
         stock_updates = []
 
-        async with self.database.get_conn() as conn:
-            # 1. Calculate Tax on Cash
-            async with conn.execute(
-                f"SELECT discord_id, currency FROM {self.USERS_TABLE} WHERE guild_id = ? AND currency > 10",  # noqa: S608
+        async with self.database.transaction() as conn:
+            cursor = await conn.execute(
+                "SELECT discord_id, currency FROM memberships WHERE guild_id = ? AND currency > 10",
                 (guild_id,),
-            ) as cursor:
-                rows = await cursor.fetchall()
+            )
+            rows = await cursor.fetchall()
 
             for uid, old_balance in rows:
                 new_balance = math.ceil(pow(old_balance, exponent))
                 tax = old_balance - new_balance
-
                 if tax > 0:
                     total_burned += tax
                     affected_users.add(UserId(uid))
@@ -727,31 +618,24 @@ class UserDB:
                         ),
                     )
 
-            # 2. Calculate Tax on Stocks
-            async with conn.execute(
+            cursor = await conn.execute(
                 """SELECT position_id, user_id, collateral_dollars,
                 notional_dollars FROM positions WHERE guild_id = ? AND collateral_dollars > 10""",
                 (guild_id,),
-            ) as cursor:
-                rows = await cursor.fetchall()
+            )
+            rows = await cursor.fetchall()
 
             for pos_id, uid, old_collat, old_notional in rows:
                 new_collat = math.ceil(pow(old_collat, exponent))
                 tax = old_collat - new_collat
-
                 if tax > 0:
-                    # Calculate new notional to maintain leverage ratio
                     ratio = new_collat / old_collat
                     new_notional = int(old_notional * ratio)
-
-                    # Safety check: Prevent calculation from rounding to 0
                     if abs(new_notional) < 1:
                         continue
-
                     total_burned += tax
                     affected_users.add(UserId(uid))
                     stock_updates.append((new_collat, new_notional, pos_id))
-
                     ledger_events.append(
                         (
                             guild_id,
@@ -764,158 +648,185 @@ class UserDB:
                         ),
                     )
 
-            # 3. Execute Updates
             if cash_updates:
                 await conn.executemany(
-                    f"UPDATE {self.USERS_TABLE} SET currency = ? WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
+                    "UPDATE memberships SET currency = ? WHERE discord_id = ? AND guild_id = ?",
                     cash_updates,
                 )
-
             if stock_updates:
                 await conn.executemany(
                     "UPDATE positions SET collateral_dollars = ?, notional_dollars = ? WHERE position_id = ?",
                     stock_updates,
                 )
-
-            # 4. Log Events
             if ledger_events:
                 await ledger_db.bulk_log_event(conn, ledger_events)
 
-            await conn.commit()
-
         return len(affected_users), total_burned
 
-    async def set_native_language(
-        self,
-        user_id: UserId,
-        guild_id: GuildId,
-        language: str | None,
-    ) -> None:
+    async def set_native_language(self, member: Member, language: str | None) -> None:
         """Set the user's native language for auto-translation."""
         async with self.database.get_conn() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, native_language)
-                VALUES (?, ?, ?)
-                ON CONFLICT(discord_id, guild_id) DO UPDATE SET
-                    native_language = excluded.native_language
-                """,  # noqa: S608
-                (user_id, guild_id, language),
+                """
+                INSERT INTO users (discord_id, native_language) VALUES (?, ?)
+                ON CONFLICT(discord_id) DO UPDATE SET native_language = excluded.native_language
+                """,
+                (member.user_id, language),
             )
             await conn.commit()
 
-    async def get_native_language(
-        self,
-        user_id: UserId,
-        guild_id: GuildId,
-    ) -> str | None:
+    async def get_native_language(self, member: Member) -> str | None:
         """Get the user's native language preference."""
         async with self.database.get_cursor() as cursor:
             await cursor.execute(
-                f"SELECT native_language FROM {self.USERS_TABLE} WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
-                (user_id, guild_id),
+                "SELECT native_language FROM users WHERE discord_id = ?",
+                (member.user_id,),
             )
-            result = await cursor.fetchone()
-            # result[0] is the language code string
-            return result[0] if result else None
+            return scalar_or(await cursor.fetchone(), "native_language", None)
 
-    async def get_timezone(self, user_id: UserId, guild_id: GuildId) -> ZoneInfo:
-        """Fetch the user's timezone, defaulting to UTC if not set."""
+    async def get_timezone(self, member: Member) -> ZoneInfo | None:
+        """Fetch the user's timezone, or None if not set."""
         async with self.database.get_cursor() as cursor:
             await cursor.execute(
-                f"SELECT timezone FROM {self.USERS_TABLE} WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
-                (user_id, guild_id),
+                "SELECT timezone FROM users WHERE discord_id = ?",
+                (member.user_id,),
             )
-            row = await cursor.fetchone()
+            tz_name = scalar_or(await cursor.fetchone(), "timezone", None)
 
-        if row and row[0]:
+        if tz_name:
             try:
-                return ZoneInfo(row[0])
+                return ZoneInfo(tz_name)
             except ZoneInfoNotFoundError, ValueError:
-                pass  # Fallback to UTC on bad data
-        return ZoneInfo("UTC")
+                pass
+        return None
 
-    async def set_timezone(self, user_id: UserId, guild_id: GuildId, tz_name: str) -> bool:
+    async def set_timezone(self, member: Member, tz_name: str) -> bool:
         """Set the user's timezone. Returns False if the timezone is invalid."""
         try:
-            ZoneInfo(tz_name)  # Validate
+            ZoneInfo(tz_name)
         except ZoneInfoNotFoundError:
             return False
 
         async with self.database.get_conn() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, timezone)
-                VALUES (?, ?, ?)
-                ON CONFLICT(discord_id, guild_id) DO UPDATE SET
-                    timezone = excluded.timezone
-                """,  # noqa: S608
-                (user_id, guild_id, tz_name),
+                """
+                INSERT INTO users (discord_id, timezone) VALUES (?, ?)
+                ON CONFLICT(discord_id) DO UPDATE SET timezone = excluded.timezone
+                """,
+                (member.user_id, tz_name),
             )
             await conn.commit()
         return True
 
-    async def set_autotranslate(
-        self,
-        user_id: UserId,
-        guild_id: GuildId,
-        enabled: bool,
-    ) -> None:
-        """Set the user's autotranslate preference (opt-in)."""
-        value = 1 if enabled else 0
+    async def set_autotranslate(self, member: Member, enabled: bool) -> None:
+        """Set the user's autotranslate preference."""
+        value = int(enabled)
         async with self.database.get_conn() as conn:
             await conn.execute(
-                f"""
-                INSERT INTO {self.USERS_TABLE} (discord_id, guild_id, autotranslate)
-                VALUES (?, ?, ?)
-                ON CONFLICT(discord_id, guild_id) DO UPDATE SET
-                    autotranslate = excluded.autotranslate
-                """,  # noqa: S608
-                (user_id, guild_id, value),
+                """
+                INSERT INTO users (discord_id, autotranslate) VALUES (?, ?)
+                ON CONFLICT(discord_id) DO UPDATE SET autotranslate = excluded.autotranslate
+                """,
+                (member.user_id, value),
             )
             await conn.commit()
 
-    async def get_autotranslate(
-        self,
-        user_id: UserId,
-        guild_id: GuildId,
-    ) -> bool:
+    async def get_autotranslate(self, member: Member) -> bool:
         """Check if the user has opted in to autotranslate."""
         async with self.database.get_cursor() as cursor:
             await cursor.execute(
-                f"SELECT autotranslate FROM {self.USERS_TABLE} WHERE discord_id = ? AND guild_id = ?",  # noqa: S608
-                (user_id, guild_id),
+                "SELECT autotranslate FROM users WHERE discord_id = ?",
+                (member.user_id,),
             )
-            result = await cursor.fetchone()
-            # result[0] is 1 or 0
-            return bool(result[0]) if result else False
+            return bool(scalar_or(await cursor.fetchone(), "autotranslate", 0))
 
-    async def purge_inactive(self, days: int = 730) -> int:
-        """Delete zero-stat users inactive for N days.
+    async def delete_users(self, guild_id: GuildId, user_ids: list[UserId]) -> int:
+        """Delete guild memberships for specific users. Positions cascade via FK.
 
-        Deletion order is critical due to FK: positions (child) before users (parent).
+        Returns the number of membership rows deleted.
         """
-        param = (f"-{days} days",)
-        criteria = """
-            last_active_timestamp < datetime('now', ?)
-            AND currency = 0 AND xp = 0 AND bumps = 0
-        """
+        if not user_ids:
+            return 0
+        ids_json = json.dumps(list(user_ids))
         async with self.database.get_conn() as conn:
-            await conn.execute(
-                f"""
-                DELETE FROM positions WHERE (user_id, guild_id) IN (
-                    SELECT discord_id, guild_id FROM {self.USERS_TABLE}
-                    WHERE {criteria}
-                )
-                """,  # noqa: S608
-                param,
-            )
             cursor = await conn.execute(
-                f"DELETE FROM {self.USERS_TABLE} WHERE {criteria}",  # noqa: S608
-                param,
+                """DELETE FROM memberships
+                   WHERE discord_id IN (SELECT value FROM json_each(?)) AND guild_id = ?""",
+                (ids_json, guild_id),
             )
             await conn.commit()
+        return cursor.rowcount
 
-        deleted = cursor.rowcount
-        self.log.info("Purged %d inactive users with zero stats (inactive for %d days)", deleted, days)
-        return deleted
+
+async def apply_delta(
+    tx: WriteTx,
+    member: Member,
+    amount: int,
+    event_type: EventType,
+    event_reason: EventReason,
+    ledger_db: CurrencyLedgerDB,
+    counterparty: int = SYSTEM_USER_ID,
+) -> Result[NonNegativeInt, InsufficientFunds]:
+    """Apply a signed currency delta within an active write transaction.
+
+    amount > 0: credit (UPSERT); amount < 0: debit (guarded UPDATE); amount == 0: read-only.
+    Returns Ok(new_balance) or Err(InsufficientFunds).
+    """
+    if amount > 0:
+        await tx.execute("INSERT OR IGNORE INTO users(discord_id) VALUES (?)", (member.user_id,))
+        cursor = await tx.execute(
+            """INSERT INTO memberships (discord_id, guild_id, currency) VALUES (?, ?, ?)
+               ON CONFLICT(discord_id, guild_id) DO UPDATE SET currency = currency + excluded.currency
+               RETURNING currency""",
+            (member.user_id, member.guild_id, amount),
+        )
+        row = await cursor.fetchone()
+        new_balance = NonNegativeInt(scalar_or(row, "currency", 0))
+        await ledger_db.log_event(
+            tx,
+            guild_id=member.guild_id,
+            event_type=event_type,
+            event_reason=event_reason,
+            sender_id=counterparty,
+            receiver_id=member.user_id,
+            amount=amount,
+            initiator_id=member.user_id,
+        )
+        return Ok(new_balance)
+
+    if amount < 0:
+        debit = abs(amount)
+        cursor = await tx.execute(
+            """UPDATE memberships SET currency = currency - ?
+               WHERE discord_id = ? AND guild_id = ? AND currency >= ?
+               RETURNING currency""",
+            (debit, member.user_id, member.guild_id, debit),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            bal_cursor = await tx.execute(
+                "SELECT currency FROM memberships WHERE discord_id = ? AND guild_id = ?",
+                (member.user_id, member.guild_id),
+            )
+            available = NonNegativeInt(scalar_or(await bal_cursor.fetchone(), "currency", 0))
+            return Err(InsufficientFunds(available=available, required=PositiveInt(debit)))
+        new_balance = NonNegativeInt(scalar_or(row, "currency", 0))
+        await ledger_db.log_event(
+            tx,
+            guild_id=member.guild_id,
+            event_type=event_type,
+            event_reason=event_reason,
+            sender_id=member.user_id,
+            receiver_id=counterparty,
+            amount=debit,
+            initiator_id=member.user_id,
+        )
+        return Ok(new_balance)
+
+    # amount == 0: read-only, no write, no log
+    bal_cursor = await tx.execute(
+        "SELECT currency FROM memberships WHERE discord_id = ? AND guild_id = ?",
+        (member.user_id, member.guild_id),
+    )
+    balance = scalar_or(await bal_cursor.fetchone(), "currency", 0)
+    return Ok(NonNegativeInt(balance))

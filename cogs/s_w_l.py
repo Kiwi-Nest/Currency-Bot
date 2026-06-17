@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Final
 from discord import Object, app_commands
 from discord.ext import commands
 
-from modules.dtypes import GuildId, PositiveInt, UserId
+from modules.dtypes import GuildId, Member, PositiveInt, UserId
 from modules.guild_cog import GuildOnlyHybridCog
 
 if TYPE_CHECKING:
@@ -89,22 +89,23 @@ class Harvest(GuildOnlyHybridCog):
         guild_id = GuildId(ctx.guild.id)
         user_id = UserId(ctx.author.id)
         await self.user_db.mint_currency(
-            user_id=user_id,
-            guild_id=guild_id,
+            Member(user_id, guild_id),
             amount=random_num,
             event_reason="HARVEST_SALE",
             ledger_db=self.ledger_db,
             initiator_id=user_id,
         )
 
+        owner = ctx.guild.owner.display_name
         log.info(
-            "User %s has sold wndx2's %s for %d.",
+            "%s has sold %s's %s for %d.",
             ctx.author.display_name,
+            owner,
             item.lower(),
             random_num,
         )
         await ctx.send(
-            f"{ctx.author.mention}, you sold wndx2's {item.lower()} for ${random_num}.",
+            f"{ctx.author.mention}, you sold {owner}'s {item.lower()} for ${random_num}.",
         )
 
         log.info(
@@ -113,7 +114,7 @@ class Harvest(GuildOnlyHybridCog):
             ctx.author.display_name,
         )
 
-    @commands.hybrid_command(name="take", description="Take one of wndx2's limbs")
+    @commands.hybrid_command(name="take", description="Take one of their limbs")
     @commands.cooldown(1, COOLDOWN, commands.BucketType.user)
     @app_commands.describe(limb="Limb to take")
     @app_commands.choices(
@@ -125,7 +126,7 @@ class Harvest(GuildOnlyHybridCog):
 
     @commands.hybrid_command(
         name="harvest",
-        description="Harvest one of wndx2's organs",
+        description="Harvest one of their organs",
     )
     @commands.cooldown(1, COOLDOWN, commands.BucketType.user)
     @app_commands.describe(organ="Organ to harvest")

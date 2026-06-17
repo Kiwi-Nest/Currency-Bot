@@ -18,8 +18,7 @@ class InsufficientFunds:
 
 
 @dataclass(slots=True, frozen=True)
-class SelfTransfer:
-    pass
+class SelfTransfer: ...
 
 
 @dataclass(slots=True, frozen=True)

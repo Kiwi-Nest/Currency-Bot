@@ -350,7 +350,7 @@ class GameAdmin(
         if isinstance(error, app_commands.CheckFailure):
             # Catches the "Manager not running" check from interaction_check
             await interaction.followup.send(f"{error}", ephemeral=True)
-        elif isinstance(original, (ServerNotFoundError, ServerStateError, RCONConnectionError)):
+        elif isinstance(original, ServerNotFoundError | ServerStateError | RCONConnectionError):
             # These are "safe" errors to show the user
             await interaction.followup.send(f"⚠️ {original}", ephemeral=True)
         elif isinstance(original, CommandExecutionError):

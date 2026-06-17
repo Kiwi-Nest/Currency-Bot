@@ -24,7 +24,7 @@ class InvitesCog(GuildOnlyHybridCog):
     # 1. Define the parent group for all invite commands
     invites = app_commands.Group(name="invites", description="Commands for invite tracking.")
 
-    def __init__(self, bot: BotCore, invites_db: InvitesDB) -> None:  # Removed guild_id, alert_channel_id from init
+    def __init__(self, bot: BotCore, invites_db: InvitesDB) -> None:
         self.bot = bot
         self.invites_db = invites_db
         self.invites: dict[GuildId, dict[str, int]] = {}  # Cache still needed for invite diffing
@@ -225,24 +225,22 @@ class InvitesCog(GuildOnlyHybridCog):
         backfills data for members who joined while the bot was offline.
         """
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send("Starting member sync... this may take a while.")
 
         try:
             guild_id = GuildId(interaction.guild.id)
             all_members = await self.invites_db.get_all_guild_members_api(guild_id)
         except Exception:
             log.exception("Error during invites sync preparation.")
-            await interaction.followup.send("An error occurred during preparation")
+            await interaction.edit_original_response(content="An error occurred during preparation")
             return
 
         if not all_members:
-            await interaction.followup.send("Could not fetch any members from the Discord API.")
+            await interaction.edit_original_response(content="Could not fetch any members from the Discord API.")
             return
 
         member_data_list = []
         for member_data in all_members:
             inviter_id_str = member_data.get("inviter_id")
-            # We still process members without an inviter_id to update their joined_at
             inviter_id: InviterId = UserId(int(inviter_id_str)) if inviter_id_str else None
 
             try:
@@ -259,15 +257,15 @@ class InvitesCog(GuildOnlyHybridCog):
                     joined_at_db = dt_object.strftime("%Y-%m-%d %H:%M:%S")
                 except ValueError:
                     log.warning("Could not parse joined_at timestamp: %s", joined_at_str)
-                    joined_at_db = None  # Let the DB handle it
+                    joined_at_db = None
 
             member_data_list.append((invitee_id, inviter_id, guild_id, joined_at_db))
 
         rows_affected = await self.invites_db.bulk_sync_invites(member_data_list)
-        await interaction.followup.send(f"Sync complete. {rows_affected} records were created or updated.")
+        await interaction.edit_original_response(content=f"Sync complete. {rows_affected} records were created or updated.")
 
 
 async def setup(bot: BotCore) -> None:
     """Entry point for loading the cog."""
-    # InvitesCog is now stateless and will fetch config per guild.
+    # InvitesCog is stateless and fetches config per guild.
     await bot.add_cog(InvitesCog(bot=bot, invites_db=bot.invites_db))

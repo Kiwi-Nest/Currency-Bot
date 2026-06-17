@@ -6,3 +6,8 @@ class StatName(StrEnum):
     BUMPS = "bumps"
     XP = "xp"
     LEVEL = "level"
+
+
+class PlainStat(StrEnum):
+    BUMPS = "bumps"
+    XP = "xp"

@@ -71,8 +71,6 @@ class MojangProfile(commands.Cog):
             msg = f"Profile not found for `{player}`."
             raise UserError(msg)
 
-        uid = str(profile.id)
-
         embed = discord.Embed(
             title=profile.name,
             color=discord.Colour.green(),
@@ -80,7 +78,7 @@ class MojangProfile(commands.Cog):
         )
         embed.set_author(name=profile.name, icon_url=f"{_HEADS}/avatar/{profile.id.hex}/64")
         embed.set_thumbnail(url=f"{_HEADS}/body/{profile.id.hex}")
-        embed.add_field(name="UUID", value=f"`{uid}`", inline=False)
+        embed.add_field(name="UUID", value=f"`{profile.id}`", inline=False)
         embed.add_field(
             name="Skin",
             value=f"[{profile.skin_variant}]({profile.skin_url})",

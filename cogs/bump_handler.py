@@ -8,8 +8,8 @@ import discord
 from discord.ext import commands
 
 from modules.discord_utils import InvalidRoleError, ping_online_role
-from modules.dtypes import GuildId, PositiveInt, RoleId, UserId
-from modules.enums import StatName
+from modules.dtypes import GuildId, Member, PositiveInt, RoleId, UserId
+from modules.enums import PlainStat
 from modules.utils import format_ordinal
 
 if TYPE_CHECKING:
@@ -112,15 +112,15 @@ class BumpHandlerCog(commands.Cog):
                 user_id = UserId(bumper.id)
                 self.recent_bumpers[user_id] = discord.utils.utcnow()
                 # Reward Currency
+                m = Member(user_id, guild_id)
                 await self.user_db.mint_currency(
-                    user_id,
-                    guild_id,
+                    m,
                     amount=reward,
                     event_reason="BUMP_SERVER",
                     ledger_db=self.ledger_db,
                 )
 
-                new_bump_count = await self.user_db.increment_stat(user_id, guild_id, StatName.BUMPS, PositiveInt(1))
+                new_bump_count = await self.user_db.increment_stat(m, PlainStat.BUMPS, PositiveInt(1))
                 log.info("Rewarded %s with $%d for bumping.", bumper.display_name, reward)
                 # Ensure the channel is a TextChannel before sending
                 if not isinstance(channel, discord.TextChannel):
@@ -133,10 +133,12 @@ class BumpHandlerCog(commands.Cog):
             if is_new_bump:
                 delay_seconds = BUMP_REMINDER_DELAY.total_seconds()
             else:
-                # Calculate remaining time for a historical bump
                 time_since_bump = discord.utils.utcnow() - message.created_at
                 remaining_delay = BUMP_REMINDER_DELAY - time_since_bump
                 delay_seconds = remaining_delay.total_seconds()
+                if delay_seconds <= 0 and await self._reminder_already_sent(channel, message):
+                    log.info("Reminder already sent for bump %s in guild %d, skipping.", message.id, guild_id)
+                    return
 
             await self._schedule_reminder(
                 guild_id,
@@ -266,6 +268,17 @@ class BumpHandlerCog(commands.Cog):
                 channel.name,
             )
 
+    async def _reminder_already_sent(self, channel: discord.TextChannel, bump_message: discord.Message) -> bool:
+        """Check if the bot already posted a bump reminder after the given bump message."""
+        _REMINDER_TITLES = {"⏰ Time to Bump! ⏰", "⚠️ Still Need a Bump! ⚠️"}
+        try:
+            async for msg in channel.history(limit=20, after=bump_message):
+                if self.bot.user and msg.author.id == self.bot.user.id and msg.embeds and msg.embeds[0].title in _REMINDER_TITLES:
+                    return True
+        except discord.Forbidden, discord.HTTPException:
+            pass
+        return False
+
     async def _find_last_bump_message(self, guild: discord.Guild) -> discord.Message | None:
         """Scan channels to find the last successful bump message."""
         # Use cached text_channels to avoid API calls on startup
@@ -299,7 +312,7 @@ async def setup(bot: BotCore) -> None:
     if not bot.config.disboard_bot_id:
         log.error("BumpHandlerCog not loaded: DISBOARD_BOT_ID is not configured.")
         return
-    # BumpHandlerCog is now mostly stateless, disboard_bot_id is global.
+    # BumpHandlerCog is mostly stateless but disboard_bot_id is global.
     await bot.add_cog(
         BumpHandlerCog(
             bot=bot,

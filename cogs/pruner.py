@@ -5,7 +5,7 @@ from discord import Forbidden, HTTPException
 from discord.ext import commands, tasks
 
 from modules.dtypes import GuildId
-from modules.security_utils import check_bot_hierarchy, check_verifiable_role
+from modules.security_utils import check_verified_role_manageable
 
 if TYPE_CHECKING:
     from modules.BotCore import BotCore
@@ -19,8 +19,8 @@ log = logging.getLogger(__name__)
 class PrunerCog(commands.Cog):
     def __init__(
         self,
-        bot: BotCore,  # Removed guild_id, role_ids_to_prune, inactivity_days from init
-        user_db: UserDB,  # UserDB is still needed
+        bot: BotCore,
+        user_db: UserDB,
     ) -> None:
         self.bot = bot
         self.user_db = user_db
@@ -34,7 +34,7 @@ class PrunerCog(commands.Cog):
         self.prune_loop.cancel()
 
     @tasks.loop(hours=1)
-    async def prune_loop(self) -> None:  # noqa: PLR0912, PLR0915
+    async def prune_loop(self) -> None:  # noqa: PLR0912
         """Check for and prune inactive members."""
         # Add this check
         leveling_cog = self.bot.get_cog("LevelingCog")
@@ -70,8 +70,7 @@ class PrunerCog(commands.Cog):
                 continue
 
             # Fetch roles from the guild that are configured for pruning
-            prunable_roles = {guild.get_role(role_id) for role_id in roles_to_prune}
-            prunable_roles.discard(None)  # Remove None if a role ID wasn't found
+            prunable_roles = {r for role_id in roles_to_prune if (r := guild.get_role(role_id))}
             if not prunable_roles:
                 log.warning(
                     "Pruning skipped for guild '%s': Configured roles not found in guild.",
@@ -103,11 +102,7 @@ class PrunerCog(commands.Cog):
                 roles_to_remove = [role for role in member.roles if role in prunable_roles]
 
                 # Also add any roles that start with matching prefix
-                gradient_roles = [
-                    role
-                    for role in member.roles
-                    if role.name.startswith("Colour: ") or role.name.startswith("Ping: ") or role.name.startswith("Gradient: ")
-                ]
+                gradient_roles = [role for role in member.roles if role.name.startswith(("Colour: ", "Ping: ", "Gradient: "))]
                 roles_to_remove.extend(gradient_roles)
 
                 # Remove duplicates in case a gradient role was already in prunable_roles
@@ -115,36 +110,22 @@ class PrunerCog(commands.Cog):
 
                 safe_roles_to_remove = []
                 for role in roles_to_remove:
-                    safe_result = check_verifiable_role(role)
-                    hierarchy_result = check_bot_hierarchy(guild, role)
-
-                    if not safe_result.ok:
+                    result = check_verified_role_manageable(guild, role)
+                    if not result.ok:
+                        is_hierarchy = result.source == "hierarchy"
                         self.bot.dispatch(
                             "security_alert",
                             guild_id=guild.id,
-                            risk_level="MEDIUM",
+                            risk_level="HIGH" if is_hierarchy else "MEDIUM",
                             details=(
-                                f"**Role Pruning Skipped**\n"
-                                f"I skipped pruning role {role.mention} from {member.mention}. Reason: {safe_result.reason}"
+                                f"**{'Role Pruning Failed' if is_hierarchy else 'Role Pruning Skipped'}**\n"
+                                f"I {'failed to prune' if is_hierarchy else 'skipped pruning'} role "
+                                f"{role.mention} from {member.mention}. Reason: {result.reason}"
                             ),
-                            warning_type="prune_security",
+                            warning_type="prune_permission" if is_hierarchy else "prune_security",
                         )
-                        continue  # Skip this unsafe role
-
-                    if hierarchy_result.ok:
-                        safe_roles_to_remove.append(role)
-                    else:
-                        # Log a warning for the specific role that failed
-                        self.bot.dispatch(
-                            "security_alert",
-                            guild_id=guild.id,
-                            risk_level="HIGH",
-                            details=(
-                                f"**Role Pruning Failed**\n"
-                                f"I failed to prune role {role.mention} from {member.mention}. Reason: {hierarchy_result.reason}"
-                            ),
-                            warning_type="prune_permission",
-                        )
+                        continue
+                    safe_roles_to_remove.append(role)
 
                 if safe_roles_to_remove:  # Use the filtered list
                     try:
@@ -191,6 +172,6 @@ async def setup(bot: BotCore) -> None:
         msg = "Bot is missing the 'user_db' attribute."
         raise RuntimeError(msg)
 
-    # PrunerCog is now stateless and will fetch config per guild.
+    # PrunerCog is stateless and fetches config per guild.
     # It still needs user_db passed in.
     await bot.add_cog(PrunerCog(bot=bot, user_db=user_db))

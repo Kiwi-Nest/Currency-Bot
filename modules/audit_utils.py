@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from operator import attrgetter
 from typing import TYPE_CHECKING
 
 import discord
@@ -88,7 +89,7 @@ def _check_fake_admin_roles(guild: discord.Guild) -> AuditResult:
     found_cosmetic = False
     fake_admin_roles = []
 
-    for role in sorted(guild.roles, key=lambda r: r.position, reverse=True):
+    for role in sorted(guild.roles, key=attrgetter("position"), reverse=True):
         if role.is_default() or role.managed:
             continue
 
@@ -151,7 +152,7 @@ def _check_privilege_escalation(guild: discord.Guild) -> AuditResult:
     if not (admin_roles and manager_roles):
         return []
 
-    lowest_admin = min(admin_roles, key=lambda r: r.position)
+    lowest_admin = min(admin_roles, key=attrgetter("position"))
     escalation_risks = [r for r in manager_roles if r.position > lowest_admin.position]
 
     if escalation_risks:
@@ -195,34 +196,53 @@ async def check_invites(guild: discord.Guild) -> AuditResult:
         A list of warnings.
 
     """
-    results: AuditResult = []
     try:
         invites = await guild.invites()
-        for invite in invites:
-            if invite.max_age == 0 and invite.max_uses == 0:
-                inviter = invite.inviter.mention if invite.inviter else "Unknown"
-                created = discord.utils.format_dt(invite.created_at) if invite.created_at else "Unknown"
-                uses = invite.uses if invite.uses is not None else 0
-                results.append(
-                    AuditIssue(
-                        category="Infinite Invite",
-                        entities=[],  # Invite is not a standard entity we listed, putting details in text
-                        details=(
-                            f"Code `{invite.code}` by {inviter} • Created: {created} • Used "
-                            f"{uses} times (never expires, no use limit)."
-                        ),
-                    ),
-                )
+        infinite = [i for i in invites if i.max_age == 0 and i.max_uses == 0]
+        if not infinite:
+            return []
+
+        # Best-effort: fetch members sorted by join date for last-user estimation.
+        # Falls back to empty list if the bot lacks permission or intent.
+        try:
+            members_by_join = sorted(
+                [m async for m in guild.fetch_members(limit=None) if m.joined_at],
+                key=lambda m: m.joined_at,  # type: ignore[arg-type, return-value]
+            )
+        except discord.Forbidden, discord.HTTPException:
+            members_by_join = []
+
+        results: AuditResult = []
+        for invite in infinite:
+            inviter = invite.inviter.mention if invite.inviter else "Unknown"
+            created = discord.utils.format_dt(invite.created_at) if invite.created_at else "Unknown"
+            uses = invite.uses or 0
+
+            last_used_str = ""
+            if uses > 0 and invite.created_at and members_by_join:
+                candidates = [m for m in members_by_join if m.joined_at >= invite.created_at]
+                if len(candidates) >= uses:
+                    last_user = candidates[uses - 1]
+                    when = discord.utils.format_dt(last_user.joined_at, style="R")  # type: ignore[arg-type]
+                    last_used_str = f" • Est. last user: {last_user.mention} ({when})"
+
+            results.append(
+                AuditIssue(
+                    category="Infinite Invite",
+                    entities=[],
+                    details=(f"Code `{invite.code}` by {inviter} • Created: {created} • Used {uses} times{last_used_str}."),
+                ),
+            )
     except discord.Forbidden:
-        results.append(
+        return [
             AuditIssue(
                 category="Missing Permissions",
                 entities=[],
                 details="Cannot audit invites (Missing `Manage Guild`).",
             ),
-        )
-
-    return results
+        ]
+    else:
+        return results
 
 
 async def check_webhooks(guild: discord.Guild) -> AuditResult:
@@ -432,13 +452,11 @@ def _group_entities_by_permissions(
         else:
             perms = entity.permissions
 
-        dangerous_perms_found = sorted([name for name in security_utils.DANGEROUS_PERMISSIONS if getattr(perms, name, False)])
+        dangerous_perms_found = sorted(name for name in security_utils.DANGEROUS_PERMISSIONS if getattr(perms, name, False))
 
         if dangerous_perms_found:
             perm_key = tuple(dangerous_perms_found)
-            if perm_key not in entity_map:
-                entity_map[perm_key] = []
-            entity_map[perm_key].append(entity)
+            entity_map.setdefault(perm_key, []).append(entity)
 
     # Convert groups to AuditIssues
     for perm_tuple, group in entity_map.items():
@@ -656,18 +674,20 @@ def check_desynced_channels(guild: discord.Guild) -> AuditResult:
     return []
 
 
-def check_hidden_channels(guild: discord.Guild) -> AuditResult:
-    """Find all channels hidden from the @everyone role.
+def check_hidden_channels(guild: discord.Guild, member_role: discord.Role | None = None) -> AuditResult:
+    """Find all channels hidden from the member role (or @everyone as fallback).
 
     Args:
         guild: The guild to scan.
+        member_role: The configured member role to check against; falls back to @everyone.
 
     Returns:
         A list of hidden channels.
 
     """
     results: AuditResult = []
-    everyone_role = guild.default_role
+    reference_role = member_role or guild.default_role
+    role_label = f"@{reference_role.name}" if member_role else "@everyone"
     hidden_channels = []
 
     for channel in guild.channels:
@@ -683,7 +703,7 @@ def check_hidden_channels(guild: discord.Guild) -> AuditResult:
         ):
             continue
 
-        overwrites = channel.overwrites_for(everyone_role)
+        overwrites = channel.overwrites_for(reference_role)
         if overwrites.view_channel is False:
             hidden_channels.append(channel)
 
@@ -692,7 +712,7 @@ def check_hidden_channels(guild: discord.Guild) -> AuditResult:
             AuditIssue(
                 category="Hidden Channels",
                 entities=hidden_channels,
-                details="Hidden from @everyone",
+                details=f"Hidden from {role_label}",
             ),
         )
 
@@ -741,7 +761,7 @@ def get_role_lists(guild: discord.Guild) -> tuple[list[str], list[str]]:
     roles_with_permissions: list[str] = []
     roles_without_permissions: list[str] = []
 
-    for role in sorted(guild.roles, key=lambda r: r.position, reverse=True):
+    for role in sorted(guild.roles, key=attrgetter("position"), reverse=True):
         # Ignore @everyone and managed bot roles
         if role.is_default() or role.managed:
             continue
@@ -764,7 +784,7 @@ def check_unused_roles(guild: discord.Guild) -> AuditResult:
         A list of unused roles.
 
     """
-    unused = [role for role in guild.roles if not role.managed and not role.is_default() and len(role.members) == 0]
+    unused = [role for role in guild.roles if not role.managed and not role.is_default() and not role.members]
     if unused:
         return [
             AuditIssue(
