@@ -182,10 +182,12 @@ class VoiceChatLogger(GuildOnlyHybridCog):
             if not config.vc_rgb_role_id:
                 continue
             role = guild.get_role(config.vc_rgb_role_id)
-            if role is None:
+            if role is None or not role.members:
                 continue
             try:
                 r, g, b = streak_color(datetime.now(UTC) - streak.started_at)
+                if role.colour.to_rgb() == (r, g, b):
+                    continue
                 await role.edit(colour=discord.Colour.from_rgb(r, g, b))
             except Exception:
                 log.exception("Failed to update RGB role for guild %s", guild_id)

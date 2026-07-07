@@ -12,6 +12,7 @@ from discord.ext import commands
 if TYPE_CHECKING:
     from modules.BotCore import BotCore
 
+from modules.auto_mod import ModerationOutcome, escalate_member
 from modules.clean_string import sanitize_chat
 from modules.dtypes import ChannelId, GuildId, UserId, is_guild_message
 
@@ -59,54 +60,30 @@ class ModSpamCog(commands.Cog):
         with contextlib.suppress(discord.Forbidden):
             await message.delete()
 
-        # --- Apply timeout ---
-        if not guild.me.guild_permissions.moderate_members:
-            self.bot.dispatch(
-                "security_alert",
-                guild_id=guild.id,
-                risk_level="HIGH",
-                details=(
-                    "**Auto-Timeout Failed: Missing Permission**\n"
-                    f"Cross-channel spam detected from {member.mention} but I lack "
-                    "`Moderate Members` to apply a timeout."
-                ),
-                warning_type="modspam_no_permission",
-            )
-            return
-
-        if member.is_timed_out():
-            return
-
         # Clear before the await to prevent re-entrant re-trigger during HTTP round-trip.
         del self._log[key]
 
-        try:
-            await member.timeout(TIMEOUT_DURATION, reason="Auto: cross-channel spam")
-            log.info("Auto-timed out %s in guild %s for cross-channel spam", member, guild.id)
-        except discord.Forbidden:
-            log.warning("Missing permissions to timeout %s in guild %s", member, guild.id)
-            self.bot.dispatch(
-                "security_alert",
-                guild_id=guild.id,
-                risk_level="HIGH",
-                details=(
-                    "**Auto-Timeout Failed: Forbidden**\n"
-                    f"Cross-channel spam detected from {member.mention} but the timeout "
-                    "request was rejected (role hierarchy or missing permission)."
-                ),
-                warning_type="modspam_forbidden",
-            )
+        outcome = await escalate_member(
+            self.bot,
+            member,
+            guild,
+            reason="cross-channel spam",
+            trigger="Cross-channel spam detected",
+            timeout_duration=TIMEOUT_DURATION,
+            warning_type="modspam_no_permission",
+        )
+        if outcome is ModerationOutcome.FAILED:
             return
 
+        action = "kicked" if outcome is ModerationOutcome.KICKED else "timed out for 1 hour"
         self.bot.dispatch(
             "security_alert",
             guild_id=guild.id,
             risk_level="HIGH",
             details=(
-                f"**Auto-Timeout: Cross-Channel Spam**\n"
-                f"{member.mention} sent the same message in {len(distinct)} channels.\n"
-                f"Content: `{content[:100]}`\n"
-                f"Duration: 1 hour"
+                f"**Auto-Moderation: Cross-Channel Spam**\n"
+                f"{member.mention} sent the same message in {len(distinct)} channels and was {action}.\n"
+                f"Content: `{content[:100]}`"
             ),
             warning_type=f"modspam_{member.id}",
         )

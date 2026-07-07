@@ -16,10 +16,12 @@ dependencies = [
   "matplotlib>=3.10.9",
   "numpy>=2.4.4",
   "aiohttp>=3.12.15",
+  "imagehash>=4.3.2",
 ]
 
 [project.optional-dependencies]
 tzbotsupport = ["tzbot4py"]
+antispam = ["imagehash"]
 
 [tool.ruff]
 line-length = 130

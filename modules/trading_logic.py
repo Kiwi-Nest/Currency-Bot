@@ -493,8 +493,7 @@ class TradingLogic:
         This is a 'lossy' transaction where the slippage fee is realized
         by flooring the final credit.
 
-        Returns
-        -------
+        Returns:
             Tuple of (ticker, pnl_precise, total_credit_precise, final_credit_int, collateral_dollars_to_close, is_partial_close)
 
         """
@@ -764,9 +763,8 @@ class TradingLogic:
     ) -> list[tuple[int, UserId, GuildId, Ticker, float]]:
         """Fetch all positions where unrealized P&L has wiped out the collateral.
 
-        Returns
-        -------
-            A list of (position_id, user_id, guild_id, ticker, pnl) tuples.
+        Returns:
+            List of (position_id, user_id, guild_id, ticker, pnl) tuples.
 
         """
         try:

@@ -92,9 +92,9 @@ class JoinLeaveLogCog(commands.Cog):
         """Automatically assign verified role id if user looks safe.
 
         Logic:
-        1. BOTS are never auto-verified.
+        1. BOTS and accounts newer than 7 days are never auto-verified.
         2. If invite info is available, reject if the INVITER is a bot.
-        3. If member has strong 'user_indicators' (nitro, avatar, etc), verify them.
+        3. If member has strong 'user_indicators' (nitro, avatar, etc) and old account, verify them.
            (This works even if the invite is None/Deleted).
         """
         verified_role: discord.Role | None = None
@@ -104,6 +104,10 @@ class JoinLeaveLogCog(commands.Cog):
 
         # Explicitly exclude bots from verification
         if member.bot:
+            return None
+
+        # Accounts newer than 7 days are never auto-verified
+        if (discord.utils.utcnow() - member.created_at).days < 7:
             return None
 
         # 2. User Account Indicators
@@ -121,7 +125,10 @@ class JoinLeaveLogCog(commands.Cog):
             user_indicators.append(f"boosting_since={member.premium_since}")
 
         # PublicUserFlags
-        public_flags = [flag_name for flag_name, has_flag in member.public_flags if has_flag and flag_name != "spammer"]
+        def valid_flag(flag: str) -> bool:
+            return flag != "spammer" and not flag.startswith("hypesquad_")
+
+        public_flags = [flag_name for flag_name, has_flag in member.public_flags if has_flag and valid_flag(flag_name)]
         if public_flags:
             user_indicators.append(f"public_flags={','.join(public_flags)}")
 

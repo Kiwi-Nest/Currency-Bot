@@ -83,7 +83,6 @@ class BumpHandlerCog(commands.Cog):
         """Unified method to handle all bump logic.
 
         Args:
-        ----
             message: The successful bump message from Disboard.
             is_new_bump: If True, grants a reward. If False, only schedules a reminder.
 

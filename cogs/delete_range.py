@@ -30,6 +30,7 @@ class RangeCount:
 class DeletionState:
     cancelled: bool = False
     deleted: int = 0
+    error: str | None = None
 
 
 def _preview(content: str) -> str:
@@ -39,18 +40,9 @@ def _preview(content: str) -> str:
 
 def _parse_message_id(value: str) -> MessageId | None:
     """Parse message ID from raw snowflake or Discord message link."""
-    value = value.strip()
-    msg_id = None
-
-    if value.isdigit():
-        msg_id = int(value)
-    else:
-        parts = value.rstrip("/").split("/")
-        if len(parts) >= 1 and parts[-1].isdigit():
-            msg_id = int(parts[-1])
-
-    if msg_id is not None and 10**17 <= msg_id < 10**19:
-        return MessageId(msg_id)
+    last = value.strip().rstrip("/").split("/")[-1]
+    if last.isdigit() and 10**17 <= (mid := int(last)) < 10**19:
+        return MessageId(mid)
     return None
 
 
@@ -149,21 +141,22 @@ def _phase2_embed(
     return embed
 
 
-def _inflight_embed(state: DeletionState) -> discord.Embed:
-    """Embed showing deletion in progress."""
-    return discord.Embed(
-        title="🗑️ Deleting…",
-        description=f"Deleted **{state.deleted}** messages so far",
-        color=discord.Color.greyple(),
-    )
+def _inflight_embed() -> discord.Embed:
+    return discord.Embed(title="🗑️ Deleting…", description="Deletion in progress.", color=discord.Color.greyple())
 
 
-def _done_embed(deleted: int, cancelled: bool, user: discord.User | None = None) -> discord.Embed:
+def _done_embed(deleted: int, cancelled: bool, error: str | None = None, user: discord.User | None = None) -> discord.Embed:
     """Embed showing deletion result."""
-    title = "🛑 Cancelled" if cancelled else "✅ Done"
     user_mention = f" by {user.mention}" if user else ""
-    desc = f"Deleted **{deleted}** messages{user_mention}" + (" before cancellation." if cancelled else ".")
-    color = discord.Color.red() if cancelled else discord.Color.green()
+    if error:
+        title, color = "⚠️ Aborted", discord.Color.orange()
+        desc = f"Deleted **{deleted}** messages{user_mention} before stopping. {error}"
+    elif cancelled:
+        title, color = "🛑 Cancelled", discord.Color.red()
+        desc = f"Deleted **{deleted}** messages{user_mention} before cancellation."
+    else:
+        title, color = "✅ Done", discord.Color.green()
+        desc = f"Deleted **{deleted}** messages{user_mention}."
     return discord.Embed(title=title, description=desc, color=color)
 
 
@@ -231,12 +224,13 @@ class ConfirmRangeView(InvokerOnlyView):
             return
 
         state = DeletionState()
-        inflight_view = InFlightView(state, interaction.user)
 
         self.stop()
-        await interaction.response.edit_message(
-            embed=_inflight_embed(state),
-            view=inflight_view,
+        await interaction.response.edit_message(embed=_inflight_embed(), view=None)
+        await interaction.followup.send(
+            content="Deletion in progress. Use this button to cancel.",
+            view=InFlightView(state, interaction.user),
+            ephemeral=True,
         )
 
         guild_config = await self.cog.bot.config_db.get_guild_config(GuildId(interaction.guild_id))
@@ -277,14 +271,14 @@ class InFlightView(InvokerOnlyView):
         super().__init__(invoker, timeout=600.0)
         self.state = state
 
+    async def on_timeout(self) -> None:
+        self.state.cancelled = True
+
     @discord.ui.button(label="Cancel Deletion", style=discord.ButtonStyle.red, emoji="🛑")
     async def cancel_deletion(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.state.cancelled = True
         button.disabled = True
-        await interaction.response.edit_message(
-            content="Cancelling…",
-            view=self,
-        )
+        await interaction.response.edit_message(content="Cancelling…", view=self)
 
 
 class DeleteRangeModal(discord.ui.Modal, title="Delete Range"):
@@ -303,14 +297,7 @@ class DeleteRangeModal(discord.ui.Modal, title="Delete Range"):
         self.start_message = start_message
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            channel = self.start_message.channel
-        except AttributeError, ValueError:
-            await interaction.response.send_message(
-                "⚠️ Start message is no longer available.",
-                ephemeral=True,
-            )
-            return
+        channel = self.start_message.channel
 
         end_id = _parse_message_id(self.end_input.value)
         if end_id is None:
@@ -349,10 +336,8 @@ class DeleteRangeModal(discord.ui.Modal, title="Delete Range"):
             )
             return
 
-        lo_id = MessageId(min(self.start_message.id, end_message.id))
-        hi_id = MessageId(max(self.start_message.id, end_message.id))
-        msg_a = self.start_message if self.start_message.id < end_message.id else end_message
-        msg_b = end_message if self.start_message.id < end_message.id else self.start_message
+        msg_a, msg_b = sorted([self.start_message, end_message], key=lambda m: m.id)
+        lo_id, hi_id = MessageId(msg_a.id), MessageId(msg_b.id)
 
         range_count = await count_range(
             channel,
@@ -399,6 +384,9 @@ async def _delete_range(
             try:
                 await channel.delete_messages(recent)
                 state.deleted += len(recent)
+            except discord.Forbidden:
+                state.error = "Bot lost permission to delete messages."
+                return
             except discord.HTTPException as e:
                 retry_delay = getattr(e, "retry_after", 1) or 1
                 for msg in recent:
@@ -407,6 +395,11 @@ async def _delete_range(
                     try:
                         await msg.delete()
                         state.deleted += 1
+                    except discord.Forbidden:
+                        state.error = "Bot lost permission to delete messages."
+                        return
+                    except discord.NotFound:
+                        pass
                     except discord.HTTPException:
                         pass
                     await asyncio.sleep(retry_delay)
@@ -417,6 +410,11 @@ async def _delete_range(
             try:
                 await msg.delete()
                 state.deleted += 1
+            except discord.Forbidden:
+                state.error = "Bot lost permission to delete messages."
+                return
+            except discord.NotFound:
+                pass
             except discord.HTTPException:
                 pass
             await asyncio.sleep(1)
@@ -430,8 +428,11 @@ async def _run_and_report(
     state: DeletionState,
 ) -> None:
     """Run deletion and update the interaction with final result."""
-    await _delete_range(channel, lo_id, hi_id, state)
-    embed = _done_embed(state.deleted, state.cancelled, interaction.user)
+    try:
+        await _delete_range(channel, lo_id, hi_id, state)
+    except discord.HTTPException as e:
+        state.error = f"Channel became unavailable: {e}"
+    embed = _done_embed(state.deleted, state.cancelled, state.error, interaction.user)
     with contextlib.suppress(discord.HTTPException):
         await interaction.edit_original_response(embed=embed, view=None)
 

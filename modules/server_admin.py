@@ -369,6 +369,7 @@ class ServerManager:
 
     async def _run_tmux_command(self, script_path: Path, command: str) -> None:
         """Execute a command via the server's tmux.sh script."""
+        stderr = b""
         try:
             proc = await asyncio.create_subprocess_exec(
                 str(script_path),
@@ -383,11 +384,11 @@ class ServerManager:
         except TimeoutError as err:
             proc.kill()
             await proc.wait()
-            msg = f"Command timed out: {cmd}"
+            msg = f"Command timed out: {command}"
             raise CommandTimeoutError(msg, stderr.decode()) from err
 
         if proc.returncode != 0 and proc.returncode is not None:
-            msg = f"Command failed with exit code {proc.returncode}: {cmd}"
+            msg = f"Command failed with exit code {proc.returncode}: {command}"
             raise CommandExecutionError(
                 msg,
                 proc.returncode,

@@ -238,9 +238,8 @@ class Daily(GuildOnlyHybridCog):
             _task_type, due_timestamp = pending_task
             if due_timestamp - time.time() <= 0:
                 log.info("DAILY_RESET was missed. Running it now before starting loop.")
-                # Run the task logic directly, not the loop itself
-                await self.daily_management_task.coro(self)
-                # The task will persist its *next* run time inside the `finally` block.
+                # Run the task logic directly, not the loop itself.
+                await self.daily_management_task.coro()
 
         # Persist the next scheduled run time to the DB before the loop starts sleeping.
         next_run_time = self.daily_management_task.next_iteration

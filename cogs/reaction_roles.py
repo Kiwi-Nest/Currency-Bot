@@ -89,9 +89,8 @@ class ReactionRoles(commands.Cog):
         Caches results to avoid re-computing for the same message.
         This is the single source of truth for all reaction role logic.
 
-        Returns
-        -------
-            A list of AnalysisResult dictionaries, one for each parsed line.
+        Returns:
+            List of AnalysisResult dictionaries, one for each parsed line.
             Returns an empty list if the message author is not an administrator.
 
         """

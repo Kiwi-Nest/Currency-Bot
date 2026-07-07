@@ -450,8 +450,7 @@ class AutoTranslate(commands.Cog):
     ) -> tuple[str, str] | None:
         """Determine source and target languages based on message context.
 
-        Returns
-        -------
+        Returns:
             tuple(source_lang, target_lang) or None
 
         """

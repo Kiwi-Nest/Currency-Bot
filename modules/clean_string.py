@@ -17,10 +17,6 @@ log = logging.getLogger(__name__)
 
 MAX_LEN: Final = 4_000
 
-# ---------------------------------------------------------------------------
-# Backend - resolved once at import
-# ---------------------------------------------------------------------------
-
 try:
     import regex as _re
 
@@ -64,10 +60,6 @@ except ModuleNotFoundError:
 # ASCII-only patterns; stdlib `re` is fine for both backends
 _tabs = re.compile(r"\t+")
 _newlines = re.compile(r"\n{3,}")
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def sanitize_chat(text: str) -> str:

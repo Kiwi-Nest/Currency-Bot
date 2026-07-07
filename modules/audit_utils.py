@@ -8,6 +8,7 @@ to the calling cog.
 
 from __future__ import annotations
 
+import datetime
 from collections import defaultdict
 from dataclasses import dataclass
 from operator import attrgetter
@@ -198,7 +199,8 @@ async def check_invites(guild: discord.Guild) -> AuditResult:
     """
     try:
         invites = await guild.invites()
-        infinite = [i for i in invites if i.max_age == 0 and i.max_uses == 0]
+        cutoff = discord.utils.utcnow() - datetime.timedelta(hours=24)
+        infinite = [i for i in invites if i.max_age == 0 and i.max_uses == 0 and (i.created_at is None or i.created_at < cutoff)]
         if not infinite:
             return []
 

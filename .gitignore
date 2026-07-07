@@ -6,6 +6,7 @@ __pycache__/
 uv.lock
 output/
 .idea/
+data/scams/
 
 *.log
 *.db
